@@ -129,9 +129,11 @@ app_license = "mit"
 # ---------------
 # Override standard doctype classes
 
-# override_doctype_class = {
-# 	"ToDo": "custom_app.overrides.CustomToDo"
-# }
+override_doctype_class = {
+    "Purchase Invoice": "quickbooks_integration.overrides.purchase_invoice.CustomPurchaseInvoice",
+    "Journal Entry": "quickbooks_integration.overrides.journal_entry.CustomJournalEntry",
+    "Journal Entry Account": "quickbooks_integration.overrides.journal_entry_account.CustomJournalEntryAccount"
+}
 
 # Document Events
 # ---------------
@@ -148,13 +150,11 @@ app_license = "mit"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
+scheduler_events = {
 # 	"all": [
 # 		"quickbooks_integration.tasks.all"
 # 	],
-# 	"daily": [
-# 		"quickbooks_integration.tasks.daily"
-# 	],
+	"daily": ["quickbooks_integration.api.sync_all.sync_all"]
 # 	"hourly": [
 # 		"quickbooks_integration.tasks.hourly"
 # 	],
@@ -164,7 +164,7 @@ app_license = "mit"
 # 	"monthly": [
 # 		"quickbooks_integration.tasks.monthly"
 # 	],
-# }
+}
 
 # Testing
 # -------
@@ -174,9 +174,10 @@ app_license = "mit"
 # Overriding Methods
 # ------------------------------
 #
-# override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "quickbooks_integration.event.get_events"
-# }
+override_whitelisted_methods = {
+    "quickbooks_integration.api.webhooks.handle_qbo_webhook": 
+    "quickbooks_integration.api.webhooks.handle_qbo_webhook"
+}
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
@@ -241,4 +242,19 @@ app_license = "mit"
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
+
+fixtures = [
+    {
+        "doctype": "Custom Field",
+        "filters": [
+            ["module", "=", "Quickbooks Integration"]
+        ]
+    },
+    {
+        "doctype": "Property Setter",
+        "filters": [
+            ["module", "=", "Quickbooks Integration"]
+        ]
+    }
+]
 
