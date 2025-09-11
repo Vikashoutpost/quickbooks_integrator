@@ -129,11 +129,11 @@ app_license = "mit"
 # ---------------
 # Override standard doctype classes
 
-override_doctype_class = {
-    "Purchase Invoice": "quickbooks_integration.overrides.purchase_invoice.CustomPurchaseInvoice",
-    "Journal Entry": "quickbooks_integration.overrides.journal_entry.CustomJournalEntry",
-    "Journal Entry Account": "quickbooks_integration.overrides.journal_entry_account.CustomJournalEntryAccount"
-}
+# override_doctype_class = {
+#     "Purchase Invoice": "quickbooks_integration.overrides.purchase_invoice.CustomPurchaseInvoice",
+#     "Journal Entry": "quickbooks_integration.overrides.journal_entry.CustomJournalEntry",
+#     "Journal Entry Account": "quickbooks_integration.overrides.journal_entry_account.CustomJournalEntryAccount"
+# }
 
 # Document Events
 # ---------------
