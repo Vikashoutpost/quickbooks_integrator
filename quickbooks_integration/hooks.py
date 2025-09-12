@@ -154,7 +154,7 @@ scheduler_events = {
 # 	"all": [
 # 		"quickbooks_integration.tasks.all"
 # 	],
-	"daily": ["quickbooks_integration.api.sync_all.sync_all"]
+	# "daily": ["quickbooks_integration.api.sync_all.sync_all"]
 # 	"hourly": [
 # 		"quickbooks_integration.tasks.hourly"
 # 	],
