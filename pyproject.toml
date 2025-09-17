@@ -1,6 +1,5 @@
 [project]
 name = "quickbooks_integration"
-version = "0.0.1"
 authors = [
     { name = "maddy", email = "madhan@outpost.work"}
 ]
