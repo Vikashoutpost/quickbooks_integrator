@@ -78,6 +78,13 @@ def sync_quickbooks_payments():
 
         for qb_payment in payments:
             try:
+                # ✅ Log the full JSON structure from QuickBooks
+                print(f"\n{'='*80}")
+                print(f"RAW QUICKBOOKS PAYMENT DATA (JSON):")
+                print(f"{'='*80}")
+                print(json.dumps(qb_payment, indent=2))
+                print(f"{'='*80}\n")
+
                 qb_payment_id = qb_payment.get("Id")
                 amount = qb_payment.get("TotalAmt", 0)
                 txn_date = qb_payment.get("TxnDate", nowdate())
@@ -296,13 +303,139 @@ def sync_quickbooks_payments():
 
                 pe.flags.ignore_mandatory = True  # Skip mandatory field validation
                 pe.save(ignore_permissions=True)
-                # Don't submit - leave as draft for user review
+
+                # ✅ Add invoice references from QuickBooks Payment Line items
+                invoice_references_added = 0
+                total_allocated = 0
+
+                print(f"\n{'─'*80}")
+                print(f"ANALYZING LINE ITEMS FOR INVOICE REFERENCES:")
+                print(f"{'─'*80}")
+                line_items = qb_payment.get("Line", [])
+                print(f"Total Line Items: {len(line_items)}")
+                if line_items:
+                    print(json.dumps(line_items, indent=2))
+                else:
+                    print("⚠️  No Line items found in this payment")
+                print(f"{'─'*80}\n")
+
+                for line in line_items:
+                    # Get linked transactions (invoices)
+                    linked_txns = line.get("LinkedTxn", [])
+                    line_amount = line.get("Amount", 0)
+
+                    for linked_txn in linked_txns:
+                        # ✅ Log LinkedTxn details
+                        print(f"\n  📄 LinkedTxn Data (Invoice Reference):")
+                        print(f"     {json.dumps(linked_txn, indent=6)}")
+
+                        txn_type = linked_txn.get("TxnType")
+                        print(f"     TxnType: {txn_type}")
+
+                        if txn_type != "Invoice":
+                            print(f"     ⏭️  Skipping - not an Invoice (TxnType: {txn_type})")
+                            continue  # Skip non-invoice references
+
+                        qb_invoice_internal_id = linked_txn.get("TxnId")
+                        print(f"     🔑 KEY: TxnId (QB Internal Invoice ID) = {qb_invoice_internal_id}")
+
+                        if not qb_invoice_internal_id:
+                            print(f"     ⚠️  No TxnId found, skipping")
+                            continue
+
+                        # Fetch the invoice from QuickBooks to get the DocNumber
+                        print(f"     📡 Fetching Invoice from QuickBooks to get DocNumber...")
+                        try:
+                            invoice_endpoint = f"{base_url}/v3/company/{realm_id}/invoice/{qb_invoice_internal_id}"
+                            invoice_response = requests.get(invoice_endpoint, headers=headers)
+
+                            if invoice_response.status_code == 200:
+                                invoice_data = invoice_response.json()
+                                qb_invoice = invoice_data.get("Invoice", {})
+                                qb_doc_number = qb_invoice.get("DocNumber")
+                                print(f"     ✅ Got DocNumber: {qb_doc_number}")
+                            else:
+                                print(f"     ⚠️  Failed to fetch invoice: {invoice_response.status_code}")
+                                qb_doc_number = None
+                        except Exception as fetch_err:
+                            print(f"     ⚠️  Error fetching invoice: {fetch_err}")
+                            qb_doc_number = None
+
+                        # If we couldn't get DocNumber, skip this reference
+                        if not qb_doc_number:
+                            print(f"     ⚠️  Could not get DocNumber for QB Invoice {qb_invoice_internal_id}, skipping")
+                            continue
+
+                        # Find the ERPNext Sales Invoice by QuickBooks DocNumber
+                        # This links Payment Entry to Sales Invoice doctype via custom_quickbooks_invoice_id
+                        print(f"\n     🔍 Searching ERPNext Sales Invoice:")
+                        print(f"        Query: Sales Invoice WHERE custom_quickbooks_invoice_id = '{qb_doc_number}'")
+
+                        erp_invoice = frappe.db.get_value(
+                            "Sales Invoice",
+                            {"custom_quickbooks_invoice_id": qb_doc_number},
+                            ["name", "outstanding_amount", "grand_total"],
+                            as_dict=True
+                        )
+
+                        if erp_invoice:
+                            print(f"        ✅ FOUND: {erp_invoice.name}")
+                            print(f"           Grand Total: {erp_invoice.grand_total}")
+                            print(f"           Outstanding: {erp_invoice.outstanding_amount}")
+                        else:
+                            print(f"        ❌ NOT FOUND: No Sales Invoice with custom_quickbooks_invoice_id = '{qb_doc_number}'")
+
+                        if not erp_invoice:
+                            print(f"   ⚠️  QB Invoice {qb_doc_number} (Internal ID: {qb_invoice_internal_id}) not found in ERPNext. Skipping reference.")
+                            continue
+
+                        # Don't add reference if invoice is already fully paid
+                        if erp_invoice.outstanding_amount <= 0:
+                            print(f"   ⚠️  Invoice {erp_invoice.name} already fully paid. Skipping reference.")
+                            continue
+
+                        # Calculate allocated amount (use line amount or remaining outstanding)
+                        allocated_amount = min(line_amount, erp_invoice.outstanding_amount)
+
+                        # Add payment reference - this creates the link to Sales Invoice
+                        pe.append("references", {
+                            "reference_doctype": "Sales Invoice",  # Links to Sales Invoice doctype
+                            "reference_name": erp_invoice.name,     # The actual Sales Invoice document
+                            "total_amount": erp_invoice.grand_total,
+                            "outstanding_amount": erp_invoice.outstanding_amount,
+                            "allocated_amount": allocated_amount
+                        })
+
+                        total_allocated += allocated_amount
+                        invoice_references_added += 1
+                        print(f"   ✅ Linked to Sales Invoice: {erp_invoice.name} (QB Doc: {qb_doc_number}), Allocated: {allocated_amount}")
+
+                # Update the total allocated amount
+                if invoice_references_added > 0:
+                    pe.total_allocated_amount = total_allocated
+                    pe.unallocated_amount = amount - total_allocated
+                    pe.save(ignore_permissions=True)
+                    print(f"   📊 Total Allocated: {total_allocated}, Unallocated: {pe.unallocated_amount}")
+
+                    # ✅ Try to submit if fully allocated
+                    if pe.unallocated_amount == 0:
+                        try:
+                            pe.submit()
+                            print(f"   ✅ Payment Entry {pe.name} SUBMITTED (fully allocated)")
+                        except Exception as submit_err:
+                            print(f"   ⚠️  Could not auto-submit {pe.name}: {submit_err}")
+                    else:
+                        print(f"   ℹ️  Payment Entry {pe.name} saved as DRAFT (partial allocation)")
+                else:
+                    print(f"   ⚠️  No invoice references found in QuickBooks Payment {qb_payment_id}")
+                    print(f"   ℹ️  Payment Entry {pe.name} saved as DRAFT (no invoice links)")
 
                 print(f"✅ Created Payment Entry: {pe.name} for QB Payment {qb_payment_id}")
                 print(f"   Amount: {amount} {payment_currency}, Customer: {erp_customer}")
                 print(f"   Paid From: {receivable_account} → Paid To: {bank_gl_account}")
                 print(f"   Company Bank Account: {party_bank_account if party_bank_account else 'Not set'}")
                 print(f"   QB Bank: {qb_bank_account_name} (ID: {qb_bank_account_id})")
+                print(f"   Invoice References: {invoice_references_added}")
                 synced_count += 1
 
             except Exception as pe_err:

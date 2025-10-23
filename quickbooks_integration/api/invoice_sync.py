@@ -101,10 +101,21 @@ def sync_quickbooks_invoices():
 
         for qb_invoice in invoices:
             try:
+                # ✅ Log the full JSON structure from QuickBooks
+                print(f"\n{'='*80}")
+                print(f"RAW QUICKBOOKS INVOICE DATA (JSON):")
+                print(f"{'='*80}")
+                print(json.dumps(qb_invoice, indent=2))
+                print(f"{'='*80}\n")
+
                 qb_invoice_id = qb_invoice.get("Id")
+                qb_doc_number = qb_invoice.get("DocNumber")  # User-visible invoice number like "MOV/003"
                 customer_ref = qb_invoice.get("CustomerRef", {}).get("name")
 
                 print(f"\n➡️  Processing Invoice {qb_invoice_id} for Customer: {customer_ref}")
+                print(f"   🔑 Internal ID: {qb_invoice_id}")
+                print(f"   📄 DocNumber: {qb_doc_number}")
+                print(f"   DocNumber will be stored in: custom_quickbooks_invoice_id")
 
                 if not customer_ref:
                     skipped_invoices.append(f"Invoice {qb_invoice_id} → No CustomerRef in QuickBooks")
@@ -125,9 +136,9 @@ def sync_quickbooks_invoices():
                     customer.payment_terms = default_terms
                     customer.save(ignore_permissions=True)
 
-                # Skip if invoice already exists
-                if frappe.db.exists("Sales Invoice", {"custom_quickbooks_invoice_id": qb_invoice_id}):
-                    skipped_invoices.append(f"Invoice {qb_invoice_id} → Already exists in ERPNext")
+                # Skip if invoice already exists (check by DocNumber)
+                if frappe.db.exists("Sales Invoice", {"custom_quickbooks_invoice_id": qb_doc_number}):
+                    skipped_invoices.append(f"Invoice {qb_doc_number} (QB ID: {qb_invoice_id}) → Already exists in ERPNext")
                     continue
 
                 # Get default company
@@ -145,7 +156,7 @@ def sync_quickbooks_invoices():
                 si.customer = customer.name
                 si.company = company
                 si.posting_date = qb_invoice.get("TxnDate") or nowdate()
-                si.custom_quickbooks_invoice_id = qb_invoice_id  # ✅ mapped to custom field
+                si.custom_quickbooks_invoice_id = qb_doc_number  # ✅ Store DocNumber (e.g., "MOV/003") instead of internal ID
                 si.payment_terms_template = customer.payment_terms or default_terms
                 si.currency = invoice_currency  # ✅ Use QB currency or customer's currency
 
