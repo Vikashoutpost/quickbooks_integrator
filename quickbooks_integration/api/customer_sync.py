@@ -62,11 +62,11 @@ def sync_quickbooks_customers():
 
         customer_data = response.json()
         customers = customer_data.get("QueryResponse", {}).get("Customer", [])
-        print("Fetched Customers:", json.dumps(customers, indent=2))
-        print(f"🔥 Total Customers in QuickBooks: {len(customers)}")
 
         if not customers:
             return "No customers found in QuickBooks."
+
+        print(f"\n📊 Syncing {len(customers)} customers from QuickBooks to {default_company}")
 
         created_customers = []
         skipped_customers = []
@@ -76,16 +76,38 @@ def sync_quickbooks_customers():
             cust_name = cust.get("DisplayName")
 
             if not cust_name:
+                print(f"⏭️  Skipping customer with QB ID {qb_customer_id} - no display name")
                 continue
 
             # Check if already exists by QuickBooks ID
-            if frappe.db.exists("Customer", {"custom_quickbooks_customer_id": qb_customer_id}):
+            existing_customer = frappe.db.get_value("Customer",
+                {"custom_quickbooks_customer_id": qb_customer_id},
+                "name"
+            )
+
+            if existing_customer:
+                print(f"⏭️  Skipping {cust_name} - already synced (QB ID: {qb_customer_id})")
                 skipped_customers.append(cust_name)
                 continue
 
-            # Check if already exists by Name (fallback)
-            if frappe.db.exists("Customer", {"customer_name": cust_name}):
-                skipped_customers.append(cust_name)
+            # Check if customer exists by Name (needs QB ID update)
+            existing_by_name = frappe.db.get_value("Customer",
+                {"customer_name": cust_name},
+                ["name", "custom_quickbooks_customer_id"],
+                as_dict=True
+            )
+
+            if existing_by_name:
+                # Update existing customer with QuickBooks ID
+                if not existing_by_name.custom_quickbooks_customer_id:
+                    frappe.db.set_value("Customer", existing_by_name.name,
+                        "custom_quickbooks_customer_id", qb_customer_id)
+                    frappe.db.commit()
+                    print(f"🔄 Updated {cust_name} with QB ID: {qb_customer_id}")
+                    created_customers.append(f"{cust_name} (updated)")
+                else:
+                    print(f"⏭️  Skipping {cust_name} - already has QB ID: {existing_by_name.custom_quickbooks_customer_id}")
+                    skipped_customers.append(cust_name)
                 continue
 
             email = (cust.get("PrimaryEmailAddr") or {}).get("Address")
@@ -113,10 +135,13 @@ def sync_quickbooks_customers():
             customer_doc.insert(ignore_permissions=True)
             frappe.db.commit()
             created_customers.append(cust_name)
-            print(f"Created Customer: {cust_name}")
-            print(f"🔥 Total Created Customers: {len(created_customers)}")
+            print(f"✅ Created Customer: {cust_name} (QB ID: {qb_customer_id})")
+
+        summary = f"\n✅ Customer Sync Complete! Created: {len(created_customers)}, Skipped: {len(skipped_customers)}, Total: {len(customers)}"
+        print(summary)
 
         return {
+            "message": summary,
             "created_customers": created_customers,
             "skipped_customers": skipped_customers
         }

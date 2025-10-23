@@ -4,6 +4,7 @@ from intuitlib.enums import Scopes
 import traceback
 import requests
 import json
+from datetime import datetime, timedelta
 
 
 @frappe.whitelist()
@@ -64,7 +65,7 @@ def oauth_callback(code=None, state=None, realmId=None):
 
         if not client_id or not client_secret or not redirect_uri:
             frappe.throw("Missing QuickBooks configuration in settings.")
-
+        
         auth_client = AuthClient(
             client_id=client_id,
             client_secret=client_secret,
@@ -74,18 +75,16 @@ def oauth_callback(code=None, state=None, realmId=None):
 
         print("🔐 Requesting token from QuickBooks...")
 
-        # ✅ FIXED (removed realm_id param)
-        token_response = auth_client.get_bearer_token(code)
+        # Exchange authorization code for tokens
+        auth_client.get_bearer_token(auth_code=code, realm_id=realmId)
 
-        print("📦 Raw token response object:")
-        print(token_response)
 
-        if not token_response:
-            frappe.throw("Failed to retrieve token from QuickBooks. The response was empty.")
+        if not auth_client.access_token:
+            frappe.throw("Failed to retrieve access token from QuickBooks.")
 
         # Save tokens & realmId
-        settings.refresh_token = token_response.get("refresh_token")
-        settings.access_token = token_response.get("access_token")
+        settings.refresh_token = auth_client.refresh_token
+        settings.access_token = auth_client.access_token
         settings.realm_id = realmId
         settings.save(ignore_permissions=True)
 
@@ -94,25 +93,10 @@ def oauth_callback(code=None, state=None, realmId=None):
         print("Refresh Token:", settings.refresh_token)
         print("Realm ID:", settings.realm_id)
 
-        # 🔹 Fetch Company Info
-        company_info_url = f"https://quickbooks.api.intuit.com/v3/company/{realmId}/companyinfo/{realmId}"
-        headers = {
-            "Authorization": f"Bearer {settings.access_token}",
-            "Accept": "application/json"
-        }
-
-        response = requests.get(company_info_url, headers=headers)
-        company_info = response.json()
-
-        print("🏢 Company Info:")
-        print(json.dumps(company_info, indent=2))
-
-        # Optionally store company name in settings
-        if company_info.get("CompanyInfo"):
-            settings.company_name = company_info["CompanyInfo"].get("CompanyName")
-            settings.save(ignore_permissions=True)
-
-        return f"QuickBooks connection successful ✅ Company: {company_info['CompanyInfo']['CompanyName']}"
+        frappe.db.commit()
+        # Redirect to Quickbook Settings page
+        frappe.local.response["type"] = "redirect"
+        frappe.local.response["location"] = "/app/quickbook-settings"
 
     except Exception as e:
         print("❌ Exception during token exchange or company info fetch:")

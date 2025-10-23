@@ -15,6 +15,8 @@ def get_quickbooks_company_info():
             frappe.throw("QuickBooks Access Token or Realm ID is missing")
         
         url = f"https://quickbooks.api.intuit.com/v3/company/{realm_id}/companyinfo/{realm_id}"
+        # url = f"https://sandbox-quickbooks.api.intuit.com/v3/company/{realm_id}/companyinfo/{realm_id}"
+
         
         headers = {
             "Authorization": f"Bearer {access_token}",

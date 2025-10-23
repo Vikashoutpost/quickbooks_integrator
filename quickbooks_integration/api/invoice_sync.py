@@ -40,21 +40,55 @@ def sync_quickbooks_invoices():
             else "https://quickbooks.api.intuit.com"
         )
 
-        # Fetch invoices
+        # Fetch invoices with pagination
         url = f"{base_url}/v3/company/{realm_id}/query"
-        query = {"query": "SELECT * FROM Invoice MAXRESULTS 50", "minorversion": "65"}
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
             "Content-Type": "application/text",
         }
 
-        response = requests.post(url, headers=headers, data=query["query"])
-        data = response.json()
-        invoices = data.get("QueryResponse", {}).get("Invoice", [])
+        # Fetch all invoices with pagination (QB API returns max 1000 records per request)
+        all_invoices = []
+        start_position = 1
+        max_results = 1000
+
+        print(f"📡 Fetching invoices from QuickBooks...")
+
+        while True:
+            query = f"SELECT * FROM Invoice STARTPOSITION {start_position} MAXRESULTS {max_results}"
+            print(f"   Query: {query}")
+
+            response = requests.post(url, headers=headers, data=query)
+
+            # ✅ Check for API errors
+            if response.status_code == 401:
+                frappe.throw("Unauthorized: Token expired or invalid. Please reconnect QuickBooks.")
+            elif response.status_code == 403:
+                frappe.throw("Forbidden: Access denied by QuickBooks. Check your app permissions.")
+            elif response.status_code != 200:
+                print(f"❌ QuickBooks API Error: {response.status_code}")
+                print(f"Response: {response.text}")
+                frappe.throw(f"QuickBooks API Error: {response.status_code}, {response.text}")
+
+            data = response.json()
+            invoices_batch = data.get("QueryResponse", {}).get("Invoice", [])
+
+            if not invoices_batch:
+                break
+
+            all_invoices.extend(invoices_batch)
+            print(f"   Fetched {len(invoices_batch)} invoices (Total so far: {len(all_invoices)})")
+
+            # If we got less than max_results, we've reached the end
+            if len(invoices_batch) < max_results:
+                break
+
+            start_position += max_results
+
+        invoices = all_invoices
+        print(f"\n📊 Total Invoices Fetched: {len(invoices)}")
         frappe.msgprint(f"🔥 Total Invoices in QuickBooks: {len(invoices)}")
-        print("Fetched Invoices:", json.dumps(invoices, indent=2))
-        print(f"🔥 Total Invoices in QuickBooks: {len(invoices)}")
 
         created_invoices = []
         skipped_invoices = []
@@ -69,6 +103,8 @@ def sync_quickbooks_invoices():
             try:
                 qb_invoice_id = qb_invoice.get("Id")
                 customer_ref = qb_invoice.get("CustomerRef", {}).get("name")
+
+                print(f"\n➡️  Processing Invoice {qb_invoice_id} for Customer: {customer_ref}")
 
                 if not customer_ref:
                     skipped_invoices.append(f"Invoice {qb_invoice_id} → No CustomerRef in QuickBooks")
@@ -94,14 +130,24 @@ def sync_quickbooks_invoices():
                     skipped_invoices.append(f"Invoice {qb_invoice_id} → Already exists in ERPNext")
                     continue
 
+                # Get default company
+                company = frappe.db.get_single_value("Global Defaults", "default_company")
+                if not company:
+                    frappe.throw("No default company set in Global Defaults.")
+
+                # ✅ Get currency from QuickBooks invoice or customer's default currency
+                qb_currency = qb_invoice.get("CurrencyRef", {}).get("value")
+                customer_currency = frappe.get_cached_value("Customer", customer.name, "default_currency")
+                invoice_currency = qb_currency or customer_currency or frappe.get_cached_value("Company", company, "default_currency")
+
                 # Create Sales Invoice
                 si = frappe.new_doc("Sales Invoice")
                 si.customer = customer.name
-                si.company = frappe.defaults.get_user_default("Company")
+                si.company = company
                 si.posting_date = qb_invoice.get("TxnDate") or nowdate()
                 si.custom_quickbooks_invoice_id = qb_invoice_id  # ✅ mapped to custom field
                 si.payment_terms_template = customer.payment_terms or default_terms
-                si.currency = frappe.get_cached_value("Company", si.company, "default_currency")  # ✅ Fix billing currency issue
+                si.currency = invoice_currency  # ✅ Use QB currency or customer's currency
 
                 # ✅ Map Header Cost Center
                 si.cost_center = fixed_cost_center
@@ -109,6 +155,7 @@ def sync_quickbooks_invoices():
                 # ✅ Skip SO/DN validation if coming from QuickBooks
                 si.flags.ignore_mandatory = True
 
+                items_added = 0
                 # Add items
                 for line in qb_invoice.get("Line", []):
                     detail = line.get("SalesItemLineDetail")
@@ -124,37 +171,84 @@ def sync_quickbooks_invoices():
                                 or frappe.db.get_value("Item", {"item_name": item_ref}, "item_code")
 
                     if not item_code:
-                        skipped_invoices.append(f"Invoice {qb_invoice_id} → Item '{item_ref}' not found")
+                        print(f"   ⏭️  Skipping line item '{item_ref}' - not found in ERPNext")
                         continue
 
                     qty = detail.get("Qty", 1)
                     amount = line.get("Amount", 0)
                     rate = amount / qty if qty else 0
 
+                    # ✅ Get item's default UOM
+                    item_uom = frappe.get_cached_value("Item", item_code, "stock_uom")
+
+                    # ✅ Check if UOM must be whole number
+                    uom_must_be_whole = frappe.db.get_value("UOM", item_uom, "must_be_whole_number")
+
+                    # If fractional qty but UOM requires whole number, adjust to use amount-based pricing
+                    if uom_must_be_whole and qty != int(qty):
+                        print(f"   ⚠️  Item {item_code} has fractional qty {qty} but UOM '{item_uom}' requires whole numbers")
+                        print(f"   💡 Converting to qty=1, rate={amount}")
+                        qty = 1
+                        rate = amount
+
                     si.append("items", {
                         "item_code": item_code,
                         "qty": qty,
                         "rate": rate,
+                        "uom": item_uom,
                         "amount": amount,
                         "cost_center": fixed_cost_center   # ✅ Line-level cost center
                     })
+                    items_added += 1
+
+                # Skip invoice if no items were added
+                if items_added == 0:
+                    print(f"⏭️  Skipping Invoice {qb_invoice_id} - no valid items found")
+                    skipped_invoices.append(f"Invoice {qb_invoice_id} → No valid items found")
+                    continue
 
                 # Save and submit
                 si.save(ignore_permissions=True)
                 si.submit()
-                created_invoices.append(f"Invoice {qb_invoice_id} → Created for Customer '{customer_ref}'")
-                frappe.msgprint(f"Invoice {qb_invoice_id} → Created for Customer '{customer_ref}'")
-                print(f"Invoice {qb_invoice_id} → Created for Customer '{customer_ref}'")
 
-            except Exception:
-                skipped_invoices.append(f"Invoice {qb_invoice.get('Id')} → Error: {frappe.get_traceback()}")
-                print(f"Error processing Invoice {qb_invoice.get('Id')}: {frappe.get_traceback()}")
+                print(f"✅ Created Sales Invoice: {si.name} (SUBMITTED) for QB Invoice {qb_invoice_id}")
+                print(f"   Customer: {customer_ref} | Currency: {invoice_currency} | Items: {items_added} | Total: {si.grand_total}")
+
+                created_invoices.append(f"Invoice {qb_invoice_id} → {si.name} (Customer: {customer_ref}, Total: {si.grand_total} {invoice_currency})")
+                frappe.msgprint(f"✅ Created: {si.name} for QB Invoice {qb_invoice_id}")
+
+            except Exception as e:
+                error_msg = str(e)
+                skipped_invoices.append(f"Invoice {qb_invoice.get('Id')} → Error: {error_msg}")
+                print(f"❌ Error processing Invoice {qb_invoice.get('Id')}: {error_msg}")
+                frappe.log_error(frappe.get_traceback(), f"Invoice Sync Failed: {qb_invoice.get('Id')}")
 
         # Summary
-        summary = "<b>✅ Created Invoices:</b><br>" + "<br>".join(created_invoices) if created_invoices else "None"
-        summary += "<br><br><b>❌ Skipped Invoices:</b><br>" + "<br>".join(skipped_invoices) if skipped_invoices else ""
+        print(f"\n{'='*60}")
+        print(f"📊 INVOICE SYNC SUMMARY")
+        print(f"{'='*60}")
+        print(f"Total Invoices in QuickBooks: {len(invoices)}")
+        print(f"✅ Successfully Created: {len(created_invoices)}")
+        print(f"⏭️  Skipped: {len(skipped_invoices)}")
+        print(f"{'='*60}\n")
+
+        summary = f"<b>📊 Invoice Sync Complete!</b><br><br>"
+        if created_invoices:
+            summary += f"<b>✅ Created: {len(created_invoices)}</b><br>" + "<br>".join(created_invoices)
+        else:
+            summary += "<b>✅ Created: 0</b><br>None"
+
+        if skipped_invoices:
+            summary += f"<br><br><b>⏭️  Skipped: {len(skipped_invoices)}</b><br>" + "<br>".join(skipped_invoices)
+
         frappe.msgprint(summary)
-        print(summary)
+
+        return {
+            "message": f"Invoice Sync Complete! Created: {len(created_invoices)}, Skipped: {len(skipped_invoices)}, Total: {len(invoices)}",
+            "created": len(created_invoices),
+            "skipped": len(skipped_invoices),
+            "total": len(invoices)
+        }
 
     except Exception as e:
         frappe.throw(f"Error syncing invoices: {str(e)}")
