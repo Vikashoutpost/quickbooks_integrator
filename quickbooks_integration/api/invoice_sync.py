@@ -110,11 +110,13 @@ def sync_quickbooks_invoices():
 
                 qb_invoice_id = qb_invoice.get("Id")
                 qb_doc_number = qb_invoice.get("DocNumber")  # User-visible invoice number like "MOV/003"
+                qb_txn_date = qb_invoice.get("TxnDate")  # Transaction date from QuickBooks
                 customer_ref = qb_invoice.get("CustomerRef", {}).get("name")
 
                 print(f"\n➡️  Processing Invoice {qb_invoice_id} for Customer: {customer_ref}")
                 print(f"   🔑 Internal ID: {qb_invoice_id}")
                 print(f"   📄 DocNumber: {qb_doc_number}")
+                print(f"   📅 TxnDate from QB: {qb_txn_date}")
                 print(f"   DocNumber will be stored in: custom_quickbooks_invoice_id")
 
                 if not customer_ref:
@@ -155,7 +157,22 @@ def sync_quickbooks_invoices():
                 si = frappe.new_doc("Sales Invoice")
                 si.customer = customer.name
                 si.company = company
-                si.posting_date = qb_invoice.get("TxnDate") or nowdate()
+
+                # ✅ Parse TxnDate properly - QuickBooks sends YYYY-MM-DD format
+                if qb_txn_date:
+                    from datetime import datetime
+                    try:
+                        # Parse QB date format (YYYY-MM-DD)
+                        parsed_date = datetime.strptime(qb_txn_date, "%Y-%m-%d").date()
+                        si.posting_date = parsed_date
+                        print(f"   ✅ Parsed date: {qb_txn_date} → {parsed_date}")
+                    except Exception as date_err:
+                        print(f"   ⚠️  Date parsing error: {date_err}, using today's date")
+                        si.posting_date = nowdate()
+                else:
+                    si.posting_date = nowdate()
+                    print(f"   ⚠️  No TxnDate from QB, using today's date")
+
                 si.custom_quickbooks_invoice_id = qb_doc_number  # ✅ Store DocNumber (e.g., "MOV/003") instead of internal ID
                 si.payment_terms_template = customer.payment_terms or default_terms
                 si.currency = invoice_currency  # ✅ Use QB currency or customer's currency
@@ -165,6 +182,38 @@ def sync_quickbooks_invoices():
 
                 # ✅ Skip SO/DN validation if coming from QuickBooks
                 si.flags.ignore_mandatory = True
+
+                # ✅ Get Item Tax Template from QuickBooks tax info BEFORE adding items
+                item_tax_template_to_use = None
+                txn_tax_detail = qb_invoice.get("TxnTaxDetail", {})
+                if txn_tax_detail:
+                    total_tax = txn_tax_detail.get("TotalTax", 0)
+                    tax_lines = txn_tax_detail.get("TaxLine", [])
+
+                    for tax_line in tax_lines:
+                        tax_line_detail = tax_line.get("TaxLineDetail", {})
+                        tax_percent = tax_line_detail.get("TaxPercent", 0)
+
+                        if tax_percent > 0:
+                            # Find Item Tax Template matching this percentage
+                            # Look for "VAT@7.50%" or similar
+                            item_tax_templates = frappe.get_all(
+                                "Item Tax Template",
+                                fields=["name", "title"]
+                            )
+
+                            for template in item_tax_templates:
+                                # Match by percentage in title (e.g., "VAT@7.50%" or "7.5% Tax")
+                                if str(tax_percent) in template.title or f"{tax_percent}%" in template.title:
+                                    item_tax_template_to_use = template.name
+                                    print(f"   ✅ Found Item Tax Template: {template.title} (matching {tax_percent}%)")
+                                    break
+
+                            if item_tax_template_to_use:
+                                break
+
+                    if not item_tax_template_to_use and total_tax > 0:
+                        print(f"   ⚠️  QB has tax ({total_tax}) but no matching Item Tax Template found")
 
                 items_added = 0
                 # Add items
@@ -202,14 +251,21 @@ def sync_quickbooks_invoices():
                         qty = 1
                         rate = amount
 
-                    si.append("items", {
+                    # ✅ Build item dict with Item Tax Template if available
+                    item_dict = {
                         "item_code": item_code,
                         "qty": qty,
                         "rate": rate,
                         "uom": item_uom,
                         "amount": amount,
                         "cost_center": fixed_cost_center   # ✅ Line-level cost center
-                    })
+                    }
+
+                    # Apply Item Tax Template to the line item
+                    if item_tax_template_to_use:
+                        item_dict["item_tax_template"] = item_tax_template_to_use
+
+                    si.append("items", item_dict)
                     items_added += 1
 
                 # Skip invoice if no items were added
