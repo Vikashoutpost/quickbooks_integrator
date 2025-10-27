@@ -174,24 +174,20 @@ def sync_quickbooks_invoices():
                     si.posting_date = nowdate()
                     print(f"   ⚠️  No TxnDate from QB, using today's date")
 
-                # ✅ Set creation timestamp from QB CreateTime
+                # ✅ Parse creation timestamp from QB CreateTime
+                parsed_creation = None
                 if qb_create_time:
                     try:
                         # Parse QB CreateTime format: "2023-05-01T02:31:07-07:00"
                         # Remove timezone for parsing (ERPNext uses naive datetime)
                         qb_create_time_no_tz = qb_create_time.rsplit('-', 1)[0] if '-' in qb_create_time[-6:] else qb_create_time.rsplit('+', 1)[0]
                         parsed_creation = datetime.strptime(qb_create_time_no_tz, "%Y-%m-%dT%H:%M:%S")
-
-                        # Set both creation and modified timestamps
-                        si.creation = parsed_creation
-                        si.modified = parsed_creation
-                        # Set flag to prevent automatic timestamp override
-                        si.flags.ignore_timestamps = True
-                        print(f"   ✅ Set creation & modified: {qb_create_time} → {parsed_creation}")
+                        print(f"   ✅ Parsed creation timestamp: {qb_create_time} → {parsed_creation}")
                     except Exception as create_err:
-                        print(f"   ⚠️  CreateTime parsing error: {create_err}, using current time")
+                        print(f"   ⚠️  CreateTime parsing error: {create_err}")
+                        parsed_creation = None
                 else:
-                    print(f"   ⚠️  No CreateTime from QB, using current time")
+                    print(f"   ⚠️  No CreateTime from QB")
 
                 si.custom_quickbooks_invoice_id = qb_doc_number  # ✅ Store DocNumber (e.g., "MOV/003") instead of internal ID
                 si.payment_terms_template = customer.payment_terms or default_terms
@@ -297,6 +293,17 @@ def sync_quickbooks_invoices():
                 # Save and submit
                 si.save(ignore_permissions=True)
                 si.submit()
+
+                # ✅ Update creation and modified timestamps in DB after save
+                # ERPNext overrides these during save, so we update them directly
+                if qb_create_time and parsed_creation:
+                    frappe.db.sql("""
+                        UPDATE `tabSales Invoice`
+                        SET creation = %s, modified = %s
+                        WHERE name = %s
+                    """, (parsed_creation, parsed_creation, si.name))
+                    frappe.db.commit()
+                    print(f"   ✅ Updated DB timestamps: creation = {parsed_creation}")
 
                 print(f"✅ Created Sales Invoice: {si.name} (SUBMITTED) for QB Invoice {qb_invoice_id}")
                 print(f"   Customer: {customer_ref} | Currency: {invoice_currency} | Items: {items_added} | Total: {si.grand_total}")
