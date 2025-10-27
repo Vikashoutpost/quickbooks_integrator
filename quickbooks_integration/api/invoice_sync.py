@@ -101,22 +101,23 @@ def sync_quickbooks_invoices():
 
         for qb_invoice in invoices:
             try:
-                # ✅ Log the full JSON structure from QuickBooks
-                print(f"\n{'='*80}")
-                print(f"RAW QUICKBOOKS INVOICE DATA (JSON):")
-                print(f"{'='*80}")
-                print(json.dumps(qb_invoice, indent=2))
-                print(f"{'='*80}\n")
-
                 qb_invoice_id = qb_invoice.get("Id")
                 qb_doc_number = qb_invoice.get("DocNumber")  # User-visible invoice number like "MOV/003"
+
+                # ✅ Log the full JSON structure to ERPNext Error Log
+                frappe.log_error(
+                    title=f"QB Invoice JSON - {qb_doc_number or qb_invoice_id}",
+                    message=json.dumps(qb_invoice, indent=2)
+                )
                 qb_txn_date = qb_invoice.get("TxnDate")  # Transaction date from QuickBooks
+                qb_create_time = qb_invoice.get("MetaData", {}).get("CreateTime")  # When created in QB
                 customer_ref = qb_invoice.get("CustomerRef", {}).get("name")
 
                 print(f"\n➡️  Processing Invoice {qb_invoice_id} for Customer: {customer_ref}")
                 print(f"   🔑 Internal ID: {qb_invoice_id}")
                 print(f"   📄 DocNumber: {qb_doc_number}")
                 print(f"   📅 TxnDate from QB: {qb_txn_date}")
+                print(f"   🕒 CreateTime from QB: {qb_create_time}")
                 print(f"   DocNumber will be stored in: custom_quickbooks_invoice_id")
 
                 if not customer_ref:
@@ -159,19 +160,38 @@ def sync_quickbooks_invoices():
                 si.company = company
 
                 # ✅ Parse TxnDate properly - QuickBooks sends YYYY-MM-DD format
+                from datetime import datetime
                 if qb_txn_date:
-                    from datetime import datetime
                     try:
                         # Parse QB date format (YYYY-MM-DD)
                         parsed_date = datetime.strptime(qb_txn_date, "%Y-%m-%d").date()
                         si.posting_date = parsed_date
-                        print(f"   ✅ Parsed date: {qb_txn_date} → {parsed_date}")
+                        print(f"   ✅ Parsed posting_date: {qb_txn_date} → {parsed_date}")
                     except Exception as date_err:
                         print(f"   ⚠️  Date parsing error: {date_err}, using today's date")
                         si.posting_date = nowdate()
                 else:
                     si.posting_date = nowdate()
                     print(f"   ⚠️  No TxnDate from QB, using today's date")
+
+                # ✅ Set creation timestamp from QB CreateTime
+                if qb_create_time:
+                    try:
+                        # Parse QB CreateTime format: "2023-05-01T02:31:07-07:00"
+                        # Remove timezone for parsing (ERPNext uses naive datetime)
+                        qb_create_time_no_tz = qb_create_time.rsplit('-', 1)[0] if '-' in qb_create_time[-6:] else qb_create_time.rsplit('+', 1)[0]
+                        parsed_creation = datetime.strptime(qb_create_time_no_tz, "%Y-%m-%dT%H:%M:%S")
+
+                        # Set both creation and modified timestamps
+                        si.creation = parsed_creation
+                        si.modified = parsed_creation
+                        # Set flag to prevent automatic timestamp override
+                        si.flags.ignore_timestamps = True
+                        print(f"   ✅ Set creation & modified: {qb_create_time} → {parsed_creation}")
+                    except Exception as create_err:
+                        print(f"   ⚠️  CreateTime parsing error: {create_err}, using current time")
+                else:
+                    print(f"   ⚠️  No CreateTime from QB, using current time")
 
                 si.custom_quickbooks_invoice_id = qb_doc_number  # ✅ Store DocNumber (e.g., "MOV/003") instead of internal ID
                 si.payment_terms_template = customer.payment_terms or default_terms
