@@ -77,34 +77,23 @@ def oauth_callback(code=None, state=None, realmId=None):
 
         auth_client.get_bearer_token(code, realm_id=realmId)
 
-        # Save tokens & realmId from auth_client attributes
-        settings.refresh_token = auth_client.refresh_token
-        settings.access_token = auth_client.access_token
-        settings.realm_id = realmId
-        settings.save(ignore_permissions=True)
+        # Save tokens & realmId directly to DB and commit
+        frappe.db.set_value(
+            "Quickbook Settings",
+            "Quickbook Settings",
+            {
+                "refresh_token": auth_client.refresh_token,
+                "access_token": auth_client.access_token,
+                "realm_id": realmId,
+                "authorization_code": code
+            }
+        )
+        frappe.db.commit()
 
         print("✅ QuickBooks token saved successfully:")
-        print("Access Token:", settings.access_token)
-        print("Refresh Token:", settings.refresh_token)
-        print("Realm ID:", settings.realm_id)
-
-        # 🔹 Fetch Company Info
-        company_info_url = f"https://quickbooks.api.intuit.com/v3/company/{realmId}/companyinfo/{realmId}"
-        headers = {
-            "Authorization": f"Bearer {settings.access_token}",
-            "Accept": "application/json"
-        }
-
-        response = requests.get(company_info_url, headers=headers)
-        company_info = response.json()
-
-        print("🏢 Company Info:")
-        print(json.dumps(company_info, indent=2))
-
-        # Optionally store company name in settings
-        if company_info.get("CompanyInfo"):
-            settings.company_name = company_info["CompanyInfo"].get("CompanyName")
-            settings.save(ignore_permissions=True)
+        print("Access Token:", auth_client.access_token)
+        print("Refresh Token:", auth_client.refresh_token)
+        print("Realm ID:", realmId)
 
         frappe.local.response["type"] = "redirect"
         frappe.local.response["location"] = "/app/quickbook-settings"
