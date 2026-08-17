@@ -1,6 +1,7 @@
 import frappe
 from intuitlib.client import AuthClient
 from intuitlib.enums import Scopes
+from intuitlib.exceptions import AuthClientError
 import traceback
 import requests
 import json
@@ -74,18 +75,11 @@ def oauth_callback(code=None, state=None, realmId=None):
 
         print("🔐 Requesting token from QuickBooks...")
 
-        # ✅ FIXED (removed realm_id param)
-        token_response = auth_client.get_bearer_token(code)
+        auth_client.get_bearer_token(code, realm_id=realmId)
 
-        print("📦 Raw token response object:")
-        print(token_response)
-
-        if not token_response:
-            frappe.throw("Failed to retrieve token from QuickBooks. The response was empty.")
-
-        # Save tokens & realmId
-        settings.refresh_token = token_response.get("refresh_token")
-        settings.access_token = token_response.get("access_token")
+        # Save tokens & realmId from auth_client attributes
+        settings.refresh_token = auth_client.refresh_token
+        settings.access_token = auth_client.access_token
         settings.realm_id = realmId
         settings.save(ignore_permissions=True)
 
@@ -112,7 +106,14 @@ def oauth_callback(code=None, state=None, realmId=None):
             settings.company_name = company_info["CompanyInfo"].get("CompanyName")
             settings.save(ignore_permissions=True)
 
-        return f"QuickBooks connection successful ✅ Company: {company_info['CompanyInfo']['CompanyName']}"
+        frappe.local.response["type"] = "redirect"
+        frappe.local.response["location"] = "/app/quickbook-settings"
+        return "QuickBooks connection successful"
+
+    except AuthClientError as e:
+        print("❌ AuthClientError during token exchange:")
+        traceback.print_exc()
+        frappe.throw(f"QuickBooks OAuth failed: {e.content}")
 
     except Exception as e:
         print("❌ Exception during token exchange or company info fetch:")
