@@ -2,7 +2,6 @@ import frappe
 import requests
 import json
 from frappe.utils import getdate, nowdate
-from quickbooks_integration.overrides.journal_entry_account import CustomJournalEntryAccount
 
 # -----------------------------
 # Date Normalization
@@ -60,9 +59,14 @@ def sync_quickbooks_bills():
             return "No bills found in QuickBooks."
 
         company = frappe.db.get_single_value("Global Defaults", "default_company")
-        default_payable = frappe.db.get_value("Company", company, "default_payable_account")
+        default_cost_center = frappe.db.get_value("Company", company, "cost_center") or "Main - MTL"
+        default_payable = frappe.db.get_value("Company", company, "default_payable_account") or \
+                          frappe.db.get_value("Account", {"account_type": "Payable", "company": company, "is_group": 0}, "name")
         default_expense = frappe.db.get_value("Company", company, "default_expense_account")
         default_currency = frappe.db.get_single_value("Global Defaults", "default_currency")
+
+        default_channel = frappe.db.get_value("Channel", {}, "name")
+        default_department = frappe.db.get_value("Department", {"company": company, "is_group": 0}, "name") or "Finance - MTL"
 
         created_je, created_pi, updated, skipped = 0, 0, 0, []
 
@@ -80,11 +84,12 @@ def sync_quickbooks_bills():
                 # --- Supplier mapping ---
                 supplier = None
                 if vendor_id:
-                    supplier = frappe.db.exists("Supplier", {"quickbooks_vendor_id": vendor_id})
+                    supplier = frappe.db.get_value("Supplier", {"custom_quickbooks_vendor_id": vendor_id}, "name")
                 if not supplier and vendor_name:
-                    supplier = frappe.db.exists("Supplier", {"supplier_name": vendor_name})
+                    supplier = frappe.db.get_value("Supplier", {"supplier_name": vendor_name}, "name") or \
+                               frappe.db.get_value("Supplier", {"name": vendor_name}, "name")
                 if not supplier:
-                    skipped.append(f"Bill {bill_no or qb_id} skipped - Supplier not found")
+                    skipped.append(f"Bill {bill_no or qb_id} skipped - Supplier not found ({vendor_name})")
                     continue
 
                 lines = b.get("Line", []) or []
@@ -100,32 +105,43 @@ def sync_quickbooks_bills():
                     skip_bill = False
 
                     for line in lines:
+                        amount = line.get("Amount", 0)
+                        if not amount or float(amount) == 0:
+                            continue
+
                         acc_detail = line.get("AccountBasedExpenseLineDetail", {}) or {}
                         account_ref = acc_detail.get("AccountRef", {}) or {}
                         acc_name = account_ref.get("name")
+                        acc_val = account_ref.get("value")
 
-                        expense_account = frappe.db.get_value(
-                            "Account",
-                            {"custom_qbc_child_account_name": acc_name, "company": company},
-                            "name"
-                        )
+                        # Try multiple ways to find the expense account in ERPNext
+                        expense_account = None
+                        if acc_val:
+                            expense_account = frappe.db.get_value("Account", {"account_number": f"QB-{acc_val}", "company": company}, "name")
+                        if not expense_account and acc_name:
+                            expense_account = frappe.db.get_value("Account", {"account_name": acc_name, "company": company}, "name") or \
+                                              frappe.db.get_value("Account", {"custom_qbc_child_account_name": acc_name, "company": company}, "name") or \
+                                              frappe.db.get_value("Account", {"name": ["like", f"%{acc_name}%"], "company": company, "is_group": 0}, "name")
+                        
                         if not expense_account:
                             skipped.append(f"Bill {bill_no or qb_id} skipped - Account mapping missing: {acc_name}")
                             skip_bill = True
                             break
 
-
-                        # Append account row WITHOUT optional fields (Channel, Cost Center, Department removed)
+                        # Append account row
                         accounts.append({
                             "account": expense_account,
-                            "debit_in_account_currency": line.get("Amount", 0),
+                            "debit_in_account_currency": amount,
                             "credit_in_account_currency": 0,
                             "exchange_rate": 1,
+                            "cost_center": default_cost_center,
+                            "channel": default_channel,
+                            "department": default_department,
                             "user_remark": "bills of QBO",
                         })
-                        total_credit += line.get("Amount", 0)
+                        total_credit += amount
 
-                    if skip_bill:
+                    if skip_bill or not accounts or total_credit <= 0:
                         continue
 
                     party_account = frappe.db.get_value(
@@ -140,6 +156,9 @@ def sync_quickbooks_bills():
                         "debit_in_account_currency": 0,
                         "party_type": "Supplier",
                         "party": supplier,
+                        "cost_center": default_cost_center,
+                        "channel": default_channel,
+                        "department": default_department,
                         "exchange_rate": 1,
                         "user_remark": "bills of QBO",
                     })
@@ -154,6 +173,7 @@ def sync_quickbooks_bills():
                         je.posting_date = posting_date
                         je.cheque_no = bill_no
                         je.cheque_date = cheque_date
+                        je.multi_currency = 1
                         je.custom_quickbooks_je_id = qb_id
                         je.save(ignore_permissions=True)
                         updated += 1
@@ -165,7 +185,7 @@ def sync_quickbooks_bills():
                             "posting_date":posting_date,
                             "cheque_no":bill_no,
                             "cheque_date":cheque_date,
-                            "multi_currency":0,
+                            "multi_currency":1,
                             "accounts":accounts,
                             "custom_quickbooks_je_id":qb_id,
                             "user_remark": "bills of QBO",
@@ -193,7 +213,8 @@ def sync_quickbooks_bills():
                         if not item_name:
                             continue
 
-                        item_code = frappe.db.exists("Item", {"item_name": item_name})
+                        item_code = frappe.db.get_value("Item", {"item_name": item_name}, "name") or \
+                                    frappe.db.get_value("Item", {"name": item_name}, "name")
                         if not item_code:
                             skipped.append(f"Bill {bill_no or qb_id} skipped - Item {item_name} not found")
                             continue
@@ -202,6 +223,7 @@ def sync_quickbooks_bills():
                             "item_code": item_code,
                             "qty": qty,
                             "rate": rate,
+                            "cost_center": default_cost_center,
                             "description": line.get("Description") or item_name
                         })
 
@@ -236,6 +258,7 @@ def sync_quickbooks_bills():
                             "due_date": due_date,
                             "bill_no": bill_no,
                             "custom_quickbooks_pi_id": qb_id,
+                            "cost_center": default_cost_center,
                             "items": items
                         })
                         pi.insert(ignore_permissions=True)
