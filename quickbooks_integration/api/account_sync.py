@@ -43,8 +43,12 @@ def sync_quickbooks_chart_of_accounts():
             frappe.throw("No accounts found in QuickBooks response")
 
         accounts = data["QueryResponse"]["Account"]
+        company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value("Global Defaults", "default_company")
+        if not company:
+            frappe.throw("No default company found. Please set a Default Company in Global Defaults.")
 
-        company = frappe.defaults.get_user_default("Company")
+        # Identify which accounts are parent accounts
+        parent_ids = {acc.get("ParentRef", {}).get("value") for acc in accounts if acc.get("ParentRef", {}).get("value")}
 
         for acc in accounts:
             acc_name = acc.get("Name")
@@ -54,32 +58,44 @@ def sync_quickbooks_chart_of_accounts():
             acc_number = acc.get("AcctNum") or f"QB-{acc_id}"  
             parent_id = acc.get("ParentRef", {}).get("value")
 
-            existing = frappe.db.exists("Account", {"quickbooks_id": acc_id})
-            if existing:
+            is_parent = (acc_id in parent_ids) or acc.get("SubAccount") is False and (acc_id in parent_ids)
+
+            # Check if account already exists
+            existing_account = frappe.db.get_value("Account", {"account_name": acc_name, "company": company}, "name") or \
+                               frappe.db.get_value("Account", {"account_number": acc_number, "company": company}, "name")
+            if existing_account:
+                # If this existing account needs to be a parent, ensure is_group is set to 1
+                if is_parent:
+                    is_grp = frappe.db.get_value("Account", existing_account, "is_group")
+                    if not is_grp:
+                        frappe.db.set_value("Account", existing_account, "is_group", 1)
+                        frappe.db.commit()
                 continue
 
             account_type, root_type = map_quickbooks_type(acc_type, acc_subtype)
 
-            parent_account = get_parent_account(parent_id)
-            if not parent_id:  
+            parent_account = get_parent_account(parent_id, company)
+            if not parent_account:  
                 parent_account = get_default_root_account(root_type, company)
 
             if not parent_account:
                 frappe.msgprint(f"Skipping {acc_name}, missing valid parent")
                 continue
 
-            is_group = 0 if parent_id else 1
+            # Ensure parent_account is a group
+            parent_is_grp = frappe.db.get_value("Account", parent_account, "is_group")
+            if not parent_is_grp:
+                frappe.db.set_value("Account", parent_account, "is_group", 1)
+                frappe.db.commit()
 
             new_account = frappe.get_doc({
                 "doctype": "Account",
                 "account_name": acc_name,
                 "account_number": acc_number,
-                "parent_account": parent_account,  
-                "is_group": is_group,
-                "account_type": account_type,
-                "root_type": root_type if not parent_id else None,  
-                "company": company,
-                "quickbooks_id": acc_id
+                "parent_account": parent_account,
+                "is_group": 1 if is_parent else 0,
+                "account_type": account_type if not is_parent else None,
+                "company": company
             })
             new_account.insert(ignore_permissions=True)
 
@@ -90,26 +106,42 @@ def sync_quickbooks_chart_of_accounts():
         return f"Error: {str(e)}"
 
 
-def get_parent_account(parent_id):
+def get_parent_account(parent_id, company):
     """Map QuickBooks parent account ID to ERPNext account"""
     if not parent_id:
         return None
-    return frappe.db.get_value("Account", {"quickbooks_id": parent_id}, "name")
+    return frappe.db.get_value("Account", {"account_number": f"QB-{parent_id}", "company": company}, "name")
 
 
 def get_default_root_account(root_type, company):
-    """Map root_type to ERPNext's default root group accounts"""
-    root_map = {
-        "Asset": "All Assets",
-        "Liability": "All Liabilities",
-        "Equity": "All Equity",
-        "Income": "All Income",
-        "Expense": "All Expenses"
-    }
-    root_name = root_map.get(root_type)
-    if not root_name:
+    """Find top-level group account for the given root_type and company"""
+    if not root_type or not company:
         return None
-    return frappe.db.get_value("Account", {"account_name": root_name, "company": company}, "name")
+
+    # First try to find a top-level group account with no parent
+    parent = frappe.db.get_value(
+        "Account",
+        {
+            "root_type": root_type,
+            "company": company,
+            "is_group": 1,
+            "parent_account": ["in", ["", None]]
+        },
+        "name"
+    )
+
+    # Fallback to any group account matching root_type
+    if not parent:
+        parent = frappe.db.get_value(
+            "Account",
+            {
+                "root_type": root_type,
+                "company": company,
+                "is_group": 1
+            },
+            "name"
+        )
+    return parent
 
 
 def map_quickbooks_type(acc_type, acc_subtype):
@@ -118,17 +150,17 @@ def map_quickbooks_type(acc_type, acc_subtype):
         "Accounts Receivable": ("Receivable", "Asset"),
         "Accounts Payable": ("Payable", "Liability"),
         "Bank": ("Bank", "Asset"),
-        "Credit Card": ("Credit Card", "Liability"),
+        "Credit Card": (None, "Liability"),
         "Fixed Asset": ("Fixed Asset", "Asset"),
-        "Other Asset": ("Current Asset", "Asset"),
-        "Other Current Asset": ("Current Asset", "Asset"),
-        "Other Current Liability": ("Current Liability", "Liability"),
-        "Long Term Liability": ("Long Term Liability", "Liability"),
+        "Other Asset": (None, "Asset"),
+        "Other Current Asset": (None, "Asset"),
+        "Other Current Liability": (None, "Liability"),
+        "Long Term Liability": (None, "Liability"),
         "Equity": ("Equity", "Equity"),
-        "Income": ("Income", "Income"),
-        "Other Income": ("Income", "Income"),
-        "Expense": ("Expense", "Expense"),
-        "Other Expense": ("Expense", "Expense"),
+        "Income": ("Income Account", "Income"),
+        "Other Income": ("Income Account", "Income"),
+        "Expense": ("Expense Account", "Expense"),
+        "Other Expense": ("Expense Account", "Expense"),
         "Cost of Goods Sold": ("Cost of Goods Sold", "Expense")
     }
     return mapping.get(acc_type, (None, None))
