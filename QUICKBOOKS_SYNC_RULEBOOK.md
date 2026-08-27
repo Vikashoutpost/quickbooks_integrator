@@ -51,11 +51,15 @@ Every transaction is assigned a single standard tag and standard dimensions to e
 
 | Transaction Type | Tag Assigned | Custom ID Prefix | Dedicated Cost Center |
 | :--- | :--- | :--- | :--- |
-| **Purchase Bills** | **`QB Bills`** | `{QBO_Id}` | `QuickBooks - MTL` (or mapped) |
-| **Sales Invoices** | **`QB Sales`** | `INV-{QBO_Id}` | `QuickBooks - MTL` (or mapped) |
+| **Purchase Bills** | **`QB Bills`** | `{QBO_Id}` | `QuickBooks - MTL` |
+| **Sales Invoices** | **`QB Sales`** | `INV-{QBO_Id}` | `QuickBooks - MTL` |
 | **Manual Journal Entries** | **`QB Journals`** | `JE-{QBO_Id}` | **`QuickBooks JV - MTL`** |
 | **Customer Payments** | **`QB Payments`** | `PAY-{QBO_Id}` | **`QuickBooks Payment - MTL`** |
 | **Vendor Bill Payments** | **`QB Payments`** | `BILLPAY-{QBO_Id}` | **`QuickBooks Payment - MTL`** |
+| **Bank Transfers** | **`QB Transfers`** | `TRF-{QBO_Id}` | `QuickBooks - MTL` |
+| **Sales Credit Notes** | **`QB Credit Notes`** | `CM-{QBO_Id}` | `QuickBooks - MTL` |
+| **Other Bank Deposits** | **`QB Deposits`** | `DEP-{QBO_Id}` | `QuickBooks - MTL` |
+| **Supplier Credit Notes** | **`QB Vendor Credits`** | `VENDCRED-{QBO_Id}`| `QuickBooks - MTL` |
 
 - **Tagging Implementation**: The code automatically sets `_user_tags = ",{Tag},"` directly on `tabJournal Entry` and inserts a matching record into `tabTag Link`.
 
