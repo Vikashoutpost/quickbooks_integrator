@@ -4,15 +4,27 @@ from intuitlib.client import AuthClient
 from frappe.utils import nowdate, getdate, flt
 
 BANK_MAP = {
+    # Exact QBO Account IDs
+    "140": "119010 - FCMB Bank - MTL",
+    "29": "119020 - Globus Bank - MTL",
+    "1150040004": "119030 - Lenco Funding Account - MTL",
+    "88": "119040 - Petty Cash - MTL",
+    "1150040010": "119040 - Petty Cash - MTL",
+    "1150040002": "119050 - Globus Bank USD - 5000032967 - MTL",
+    "1150040000": "119060 - Globus Bank USD - 8000006697 - MTL",
+    "172": "119070 - Movam Inc - MTL",
+
+    # Keyword / Name matches
     "fcmb": "119010 - FCMB Bank - MTL",
-    "globus": "119020 - Globus Bank - MTL",
-    "globus bank": "119020 - Globus Bank - MTL",
-    "lenco": "119030 - Lenco Funding Account - MTL",
-    "petty cash": "119040 - Petty Cash - MTL",
-    "cash": "119040 - Petty Cash - MTL",
-    "cash in hand": "119040 - Petty Cash - MTL",
+    "globus bank - 8000006697": "119060 - Globus Bank USD - 8000006697 - MTL",
+    "globus bank - 5000032967": "119050 - Globus Bank USD - 5000032967 - MTL",
     "5000032967": "119050 - Globus Bank USD - 5000032967 - MTL",
     "8000006697": "119060 - Globus Bank USD - 8000006697 - MTL",
+    "globus": "119020 - Globus Bank - MTL",
+    "lenco": "119030 - Lenco Funding Account - MTL",
+    "petty cash": "119040 - Petty Cash - MTL",
+    "cash in hand": "119040 - Petty Cash - MTL",
+    "cash": "119040 - Petty Cash - MTL",
     "movam inc": "119070 - Movam Inc - MTL",
     "fcmb usd": "119080 - FCMB USD - MTL",
     "omnipay": "119090 - Omnipay/Movam Technologies - MTL",
@@ -46,25 +58,30 @@ def resolve_bank_account(bank_ref, currency="NGN", company="Movam Technologies L
         return "119020 - Globus Bank - MTL" if currency == "NGN" else "119050 - Globus Bank USD - 5000032967 - MTL"
 
     b_name = (bank_ref.get("name") or "").strip().lower()
-    b_val = (bank_ref.get("value") or "").strip()
+    b_val = str(bank_ref.get("value") or "").strip()
 
-    # 1. Match from explicit keyword map
+    # 1. Match from explicit ID map
+    if b_val and b_val in BANK_MAP:
+        return BANK_MAP[b_val]
+
+    # 2. Match from explicit keyword map
     for k, acc in BANK_MAP.items():
-        if k in b_name or k == b_val:
+        if (b_name and k in b_name) or k == b_val:
             if frappe.db.exists("Account", acc):
                 return acc
 
-    # 2. Match exact account name
-    cand = frappe.db.sql("""
-        SELECT name FROM `tabAccount` 
-        WHERE company = %s AND is_group = 0 AND disabled = 0 
-          AND name NOT LIKE 'QB-%%' 
-          AND (LOWER(account_name) = %s OR LOWER(name) LIKE %s)
-        LIMIT 1
-    """, (company, b_name, f"%{b_name}%"))
+    # 3. Match exact account name
+    if b_name:
+        cand = frappe.db.sql("""
+            SELECT name FROM `tabAccount` 
+            WHERE company = %s AND is_group = 0 AND disabled = 0 
+              AND name NOT LIKE 'QB-%%' 
+              AND (LOWER(account_name) = %s OR LOWER(name) LIKE %s)
+            LIMIT 1
+        """, (company, b_name, f"%{b_name}%"))
 
-    if cand and cand[0][0]:
-        return cand[0][0]
+        if cand and cand[0][0]:
+            return cand[0][0]
 
     return "119020 - Globus Bank - MTL" if currency == "NGN" else "119050 - Globus Bank USD - 5000032967 - MTL"
 
