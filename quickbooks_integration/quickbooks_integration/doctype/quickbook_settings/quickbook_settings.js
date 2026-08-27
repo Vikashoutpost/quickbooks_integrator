@@ -68,6 +68,54 @@ frappe.ui.form.on("Quickbook Settings", {
             });
         }, __("Sync Transactions"));
 
+        frm.add_custom_button(__("Fetch Transfers"), function() {
+            frappe.call({
+                method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_transfers",
+                callback: function(r) {
+                    frappe.show_alert({
+                        message: r.message || __("Transfers sync started in background..."),
+                        indicator: "blue"
+                    }, 8);
+                }
+            });
+        }, __("Sync Transactions"));
+
+        frm.add_custom_button(__("Fetch Deposits"), function() {
+            frappe.call({
+                method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_deposits",
+                callback: function(r) {
+                    frappe.show_alert({
+                        message: r.message || __("Deposits sync started in background..."),
+                        indicator: "blue"
+                    }, 8);
+                }
+            });
+        }, __("Sync Transactions"));
+
+        frm.add_custom_button(__("Fetch Credit Memos"), function() {
+            frappe.call({
+                method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_credit_memos",
+                callback: function(r) {
+                    frappe.show_alert({
+                        message: r.message || __("Credit Memos sync started in background..."),
+                        indicator: "blue"
+                    }, 8);
+                }
+            });
+        }, __("Sync Transactions"));
+
+        frm.add_custom_button(__("Fetch Vendor Credits"), function() {
+            frappe.call({
+                method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_vendor_credits",
+                callback: function(r) {
+                    frappe.show_alert({
+                        message: r.message || __("Vendor Credits sync started in background..."),
+                        indicator: "blue"
+                    }, 8);
+                }
+            });
+        }, __("Sync Transactions"));
+
         frm.add_custom_button(__("Stop / Cancel Sync"), function() {
             frappe.confirm(__("Are you sure you want to stop any currently running background sync?"), function() {
                 frappe.call({
@@ -191,6 +239,22 @@ function render_sync_dashboard(frm) {
                     <div style="font-weight: 600; color: #0f172a;">Fetch Payments</div>
                     <div style="font-size: 11px; color: #64748b;">Tag: QB Payments</div>
                 </button>
+                <button class="btn btn-default btn-sm" id="qb-sync-transfers-btn" style="text-align: left; padding: 10px 12px;">
+                    <div style="font-weight: 600; color: #0f172a;">Fetch Transfers</div>
+                    <div style="font-size: 11px; color: #64748b;">Tag: QB Transfers</div>
+                </button>
+                <button class="btn btn-default btn-sm" id="qb-sync-deposits-btn" style="text-align: left; padding: 10px 12px;">
+                    <div style="font-weight: 600; color: #0f172a;">Fetch Deposits</div>
+                    <div style="font-size: 11px; color: #64748b;">Tag: QB Deposits</div>
+                </button>
+                <button class="btn btn-default btn-sm" id="qb-sync-cms-btn" style="text-align: left; padding: 10px 12px;">
+                    <div style="font-weight: 600; color: #0f172a;">Fetch Credit Memos</div>
+                    <div style="font-size: 11px; color: #64748b;">Tag: QB Credit Notes</div>
+                </button>
+                <button class="btn btn-default btn-sm" id="qb-sync-vcs-btn" style="text-align: left; padding: 10px 12px;">
+                    <div style="font-weight: 600; color: #0f172a;">Fetch Vendor Credits</div>
+                    <div style="font-size: 11px; color: #64748b;">Tag: QB Vendor Credits</div>
+                </button>
             </div>
         </div>
     `;
@@ -231,6 +295,42 @@ function render_sync_dashboard(frm) {
                 method: "quickbooks_integration.api.payments_sync.enqueue_sync_payments",
                 callback: function(r) {
                     frappe.show_alert({ message: r.message || __("Payments sync started in background..."), indicator: "blue" }, 8);
+                }
+            });
+        });
+
+        frm.page.main.find("#qb-sync-transfers-btn").on("click", function() {
+            frappe.call({
+                method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_transfers",
+                callback: function(r) {
+                    frappe.show_alert({ message: r.message || __("Transfers sync started in background..."), indicator: "blue" }, 8);
+                }
+            });
+        });
+
+        frm.page.main.find("#qb-sync-deposits-btn").on("click", function() {
+            frappe.call({
+                method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_deposits",
+                callback: function(r) {
+                    frappe.show_alert({ message: r.message || __("Deposits sync started in background..."), indicator: "blue" }, 8);
+                }
+            });
+        });
+
+        frm.page.main.find("#qb-sync-cms-btn").on("click", function() {
+            frappe.call({
+                method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_credit_memos",
+                callback: function(r) {
+                    frappe.show_alert({ message: r.message || __("Credit Memos sync started in background..."), indicator: "blue" }, 8);
+                }
+            });
+        });
+
+        frm.page.main.find("#qb-sync-vcs-btn").on("click", function() {
+            frappe.call({
+                method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_vendor_credits",
+                callback: function(r) {
+                    frappe.show_alert({ message: r.message || __("Vendor Credits sync started in background..."), indicator: "blue" }, 8);
                 }
             });
         });
