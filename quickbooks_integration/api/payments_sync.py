@@ -247,10 +247,6 @@ def sync_quickbooks_payments(user=None):
                 doc_number = p.get("DocNumber")
                 total_amt = flt(p.get("TotalAmt", 0))
                 if total_amt <= 0:
-                    lines_sum = sum(flt(l.get("Amount", 0)) for l in p.get("Line", []))
-                    total_amt = lines_sum
-
-                if total_amt <= 0:
                     continue
 
                 txn_date = p.get("TxnDate") or nowdate()
@@ -466,10 +462,6 @@ def sync_quickbooks_payments(user=None):
                 qb_id = bp.get("Id")
                 doc_number = bp.get("DocNumber")
                 total_amt = flt(bp.get("TotalAmt", 0))
-                if total_amt <= 0:
-                    lines_sum = sum(flt(l.get("Amount", 0)) for l in bp.get("Line", []))
-                    total_amt = lines_sum
-
                 if total_amt <= 0:
                     continue
 
