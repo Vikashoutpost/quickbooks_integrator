@@ -246,30 +246,20 @@ def sync_quickbooks_journal_entries(user=None):
             if acc.account_number:
                 acc_by_num[acc.account_number.strip()] = acc
 
+        from quickbooks_integration.api.account_mapper import resolve_account_master, build_account_cache
+
+        cache = build_account_cache(company)
+
         def resolve_account(acc_ref, txn_curr):
             acc_name = (acc_ref.get("name") or "").strip()
             acc_val = (acc_ref.get("value") or "").strip()
-
-            if acc_name in EXTRA_JE_MAPPING:
-                mapped = EXTRA_JE_MAPPING[acc_name]
-                if mapped == "225010 - Trade Creditors - NGN - MTL" and txn_curr == "USD":
-                    return "225020 - Trade Creditors - USD - MTL"
-                return mapped
-
-            if acc_val and f"QB-{acc_val}" in acc_by_num:
-                return acc_by_num[f"QB-{acc_val}"]["name"]
-            if acc_val and acc_val in acc_by_num:
-                return acc_by_num[acc_val]["name"]
-            if acc_name in MOVAM_ACCOUNT_MAPPING:
-                return MOVAM_ACCOUNT_MAPPING[acc_name]
-            if acc_name.lower() in SALES_ACCOUNT_MAPPING:
-                return SALES_ACCOUNT_MAPPING[acc_name.lower()]
-            if acc_name.lower() in acc_by_name:
-                return acc_by_name[acc_name.lower()]["name"]
-            for k, v in acc_by_name.items():
-                if acc_name.lower() in k or k in acc_name.lower():
-                    return v["name"]
-            return None
+            
+            res = resolve_account_master(acc_ref, company, cache=cache)
+            if res == "225010 - Trade Creditors - NGN - MTL" and txn_curr == "USD":
+                return "225020 - Trade Creditors - USD - MTL"
+            if res == "121010 - Trade Receivables - NGN - MTL" and txn_curr == "USD":
+                return "121020 - Trade Receivables - USD - MTL"
+            return res
 
         # Fetch all Journal Entries using pagination
         start_position = 1

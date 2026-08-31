@@ -2,71 +2,14 @@ import frappe
 import requests
 from intuitlib.client import AuthClient
 from frappe.utils import nowdate, getdate, flt
-from quickbooks_integration.api.payments_sync import BANK_MAP, resolve_bank_account
+from quickbooks_integration.api.payments_sync import resolve_bank_account
+from quickbooks_integration.api.account_mapper import (
+    resolve_account_master, build_account_cache, MASTER_ACCOUNT_MAP
+)
 from quickbooks_integration.api.banking_and_returns_sync import (
-    refresh_qb_token, resolve_account_from_ref, get_or_create_customer,
+    refresh_qb_token, get_or_create_customer,
     get_or_create_supplier, tag_journal_entry, fetch_entity_attachments
 )
-
-
-def build_account_cache(company):
-    """Pre-load all accounts for instant O(1) in-memory resolution without DB hits"""
-    accounts = frappe.db.sql("""
-        SELECT name, account_name, account_number, account_currency, account_type, custom_qbc_child_account_name
-        FROM `tabAccount`
-        WHERE company = %s AND is_group = 0
-    """, (company,), as_dict=True)
-
-    cache = {
-        "by_name": {},
-        "by_acc_num": {},
-        "by_qbc_name": {},
-        "raw": {}
-    }
-    for a in accounts:
-        cache["raw"][a.name] = a
-        if a.account_name:
-            cache["by_name"][a.account_name.lower().strip()] = a.name
-        if a.account_number:
-            cache["by_acc_num"][str(a.account_number).strip()] = a.name
-        if a.custom_qbc_child_account_name:
-            cache["by_qbc_name"][a.custom_qbc_child_account_name.lower().strip()] = a.name
-    return cache
-
-
-def fast_resolve_account(acc_ref, company, default_expense, cache):
-    """Fast account resolution using in-memory cache"""
-    if not acc_ref:
-        return default_expense
-
-    val = str(acc_ref.get("value") or "").strip()
-    name = (acc_ref.get("name") or "").strip().lower()
-
-    # 1. Exact Bank Map
-    if val and val in BANK_MAP:
-        return BANK_MAP[val]
-    for k, v in BANK_MAP.items():
-        if (name and k in name) or k == val:
-            if v in cache["raw"]:
-                return v
-
-    # 2. Match from QB-{val}
-    if val:
-        qb_num = f"QB-{val}"
-        if qb_num in cache["by_acc_num"]:
-            return cache["by_acc_num"][qb_num]
-
-    # 3. Match from Account Name
-    if name:
-        if name in cache["by_name"]:
-            return cache["by_name"][name]
-        if name in cache["by_qbc_name"]:
-            return cache["by_qbc_name"][name]
-        for acc_name, acc_id in cache["by_name"].items():
-            if name in acc_name:
-                return acc_id
-
-    return default_expense if default_expense in cache["raw"] else "403320 - Office Expenses - MTL"
 
 
 @frappe.whitelist()
@@ -170,7 +113,7 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
 
                 detail = line.get("AccountBasedExpenseLineDetail") or line.get("ItemBasedExpenseLineDetail") or {}
                 acc_ref = detail.get("AccountRef") or detail.get("ItemRef") or {}
-                expense_acc = fast_resolve_account(acc_ref, company, default_expense, cache)
+                expense_acc = resolve_account_master(acc_ref, company, default_acc=default_expense, cache=cache)
 
                 acc_info = cache["raw"].get(expense_acc, {})
                 acc_curr = acc_info.get("account_currency") or company_currency

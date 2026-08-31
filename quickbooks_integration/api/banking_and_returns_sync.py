@@ -100,37 +100,12 @@ def tag_journal_entry(je_name, tag_name):
         pass
 
 
+from quickbooks_integration.api.account_mapper import resolve_account_master, build_account_cache
+
+
 def resolve_account_from_ref(acc_ref, company, default_acc):
-    """Resolve Account from QBO AccountRef (ID, Name, or fallback)"""
-    if not acc_ref:
-        return default_acc
-
-    val = str(acc_ref.get("value") or "").strip()
-    name = (acc_ref.get("name") or "").strip()
-
-    # 1. Match from BANK_MAP
-    if val and val in BANK_MAP:
-        return BANK_MAP[val]
-    for k, v in BANK_MAP.items():
-        if (name and k in name.lower()) or k == val:
-            if frappe.db.exists("Account", v):
-                return v
-
-    # 2. Match from account_number QB-{val}
-    if val:
-        acc = frappe.db.get_value("Account", {"account_number": f"QB-{val}", "company": company}, "name")
-        if acc and frappe.db.exists("Account", acc):
-            return acc
-
-    # 3. Match from Account Name
-    if name:
-        acc = frappe.db.get_value("Account", {"account_name": name, "company": company, "is_group": 0}, "name") or \
-              frappe.db.get_value("Account", {"custom_qbc_child_account_name": name, "company": company, "is_group": 0}, "name") or \
-              frappe.db.get_value("Account", {"name": ["like", f"%{name}%"], "company": company, "is_group": 0}, "name")
-        if acc and frappe.db.exists("Account", acc):
-            return acc
-
-    return default_acc if frappe.db.exists("Account", default_acc) else "312060 - Other Income - MTL"
+    """Resolve Account from QBO AccountRef using Centralized Account Mapper"""
+    return resolve_account_master(acc_ref, company, default_acc=default_acc)
 
 
 def get_or_create_customer(cust_ref, curr="NGN"):

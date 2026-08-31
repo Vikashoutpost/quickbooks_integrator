@@ -34,46 +34,17 @@ def adjust_due_date_for_je(posting_date, due_date):
     return posting_date, due_date
 
 
+from quickbooks_integration.api.account_mapper import resolve_account_master, build_account_cache
+
+
 def get_expense_account_for_line(line, company, default_expense):
-    """Resolve the ERPNext Account for both Account-based and Item-based lines"""
+    """Resolve the ERPNext Account using Centralized Account Mapper"""
     acc_detail = line.get("AccountBasedExpenseLineDetail", {}) or {}
     item_detail = line.get("ItemBasedExpenseLineDetail", {}) or {}
 
-    acc_ref = acc_detail.get("AccountRef", {}) or {}
-    acc_name = acc_ref.get("name")
-    acc_val = acc_ref.get("value")
-
-    # 1. Direct QuickBooks Account ID
-    if acc_val:
-        acc = frappe.db.get_value("Account", {"account_number": f"QB-{acc_val}", "company": company}, "name")
-        if acc:
-            return acc
-
-    # 2. Account Name Match
-    if acc_name:
-        acc = frappe.db.get_value("Account", {"account_name": acc_name, "company": company}, "name") or \
-              frappe.db.get_value("Account", {"custom_qbc_child_account_name": acc_name, "company": company}, "name") or \
-              frappe.db.get_value("Account", {"name": ["like", f"%{acc_name}%"], "company": company, "is_group": 0}, "name")
-        if acc:
-            return acc
-
-    # 3. Item-based line - try item's expense account or item name as account
-    if item_detail:
-        item_ref = item_detail.get("ItemRef", {}) or {}
-        item_name = item_ref.get("name")
-        if item_name:
-            acc = frappe.db.get_value("Account", {"account_name": item_name, "company": company}, "name") or \
-                  frappe.db.get_value("Account", {"name": ["like", f"%{item_name}%"], "company": company, "is_group": 0}, "name")
-            if acc:
-                return acc
-            
-            # Check Item default expense account in Item Defaults
-            item_code = frappe.db.get_value("Item", {"item_name": item_name}, "name") or \
-                        frappe.db.get_value("Item", {"name": item_name}, "name")
-            if item_code:
-                item_exp = frappe.db.get_value("Item Default", {"parent": item_code, "company": company}, "expense_account")
-                if item_exp:
-                    return item_exp
+    acc_ref = acc_detail.get("AccountRef", {}) or item_detail.get("ItemRef", {}) or {}
+    if acc_ref:
+        return resolve_account_master(acc_ref, company, default_acc=default_expense)
 
     return default_expense
 

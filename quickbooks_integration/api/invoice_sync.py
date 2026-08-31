@@ -34,45 +34,15 @@ def adjust_due_date_for_je(posting_date, due_date):
     return posting_date, due_date
 
 
+from quickbooks_integration.api.account_mapper import resolve_account_master, build_account_cache
+
+
 def get_income_account_for_line(line, company, default_income):
-    """Resolve the ERPNext Account for Sales Invoice lines"""
+    """Resolve the ERPNext Account for Sales Invoice lines using Centralized Account Mapper"""
     detail = line.get("SalesItemLineDetail", {}) or {}
-    item_ref = detail.get("ItemRef", {}) or {}
-    item_name = item_ref.get("name")
-    item_val = item_ref.get("value")
-
-    # 1. Look up item's default income account in ERPNext
-    if item_name:
-        item_code = frappe.db.get_value("Item", {"item_name": item_name}, "name") or \
-                    frappe.db.get_value("Item", {"item_code": item_name}, "name") or \
-                    frappe.db.get_value("Item", {"name": item_name}, "name")
-        if item_code:
-            income_acc = frappe.db.get_value("Item Default", {"parent": item_code, "company": company}, "income_account")
-            if income_acc:
-                return income_acc
-
-        acc = frappe.db.get_value("Account", {"account_name": item_name, "company": company, "is_group": 0}, "name") or \
-              frappe.db.get_value("Account", {"custom_qbc_child_account_name": item_name, "company": company, "is_group": 0}, "name") or \
-              frappe.db.get_value("Account", {"name": ["like", f"%{item_name}%"], "company": company, "is_group": 0}, "name")
-        if acc:
-            return acc
-
-    # 2. Check if line has direct AccountRef
-    acc_ref = detail.get("AccountRef", {}) or {}
-    acc_val = acc_ref.get("value")
-    acc_name = acc_ref.get("name")
-
-    if acc_val:
-        acc = frappe.db.get_value("Account", {"account_number": f"QB-{acc_val}", "company": company}, "name")
-        if acc:
-            return acc
-
-    if acc_name:
-        acc = frappe.db.get_value("Account", {"account_name": acc_name, "company": company, "is_group": 0}, "name") or \
-              frappe.db.get_value("Account", {"custom_qbc_child_account_name": acc_name, "company": company, "is_group": 0}, "name") or \
-              frappe.db.get_value("Account", {"name": ["like", f"%{acc_name}%"], "company": company, "is_group": 0}, "name")
-        if acc:
-            return acc
+    acc_ref = detail.get("AccountRef", {}) or detail.get("ItemRef", {}) or {}
+    if acc_ref:
+        return resolve_account_master(acc_ref, company, classification="revenue", default_acc=default_income)
 
     return default_income
 
