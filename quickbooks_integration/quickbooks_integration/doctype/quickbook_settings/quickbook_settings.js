@@ -116,6 +116,18 @@ frappe.ui.form.on("Quickbook Settings", {
             });
         }, __("Sync Transactions"));
 
+        frm.add_custom_button(__("Fetch Direct Expenses"), function() {
+            frappe.call({
+                method: "quickbooks_integration.api.purchase_expenses_sync.enqueue_sync_purchases",
+                callback: function(r) {
+                    frappe.show_alert({
+                        message: r.message || __("Direct Expenses sync started in background..."),
+                        indicator: "blue"
+                    }, 8);
+                }
+            });
+        }, __("Sync Transactions"));
+
         frm.add_custom_button(__("Stop / Cancel Sync"), function() {
             frappe.confirm(__("Are you sure you want to stop any currently running background sync?"), function() {
                 frappe.call({
@@ -255,6 +267,10 @@ function render_sync_dashboard(frm) {
                     <div style="font-weight: 600; color: #0f172a;">Fetch Vendor Credits</div>
                     <div style="font-size: 11px; color: #64748b;">Tag: QB Vendor Credits</div>
                 </button>
+                <button class="btn btn-default btn-sm" id="qb-sync-purchases-btn" style="text-align: left; padding: 10px 12px;">
+                    <div style="font-weight: 600; color: #0f172a;">Fetch Direct Expenses</div>
+                    <div style="font-size: 11px; color: #64748b;">Tag: QB Expenses</div>
+                </button>
             </div>
         </div>
     `;
@@ -331,6 +347,15 @@ function render_sync_dashboard(frm) {
                 method: "quickbooks_integration.api.banking_and_returns_sync.enqueue_sync_vendor_credits",
                 callback: function(r) {
                     frappe.show_alert({ message: r.message || __("Vendor Credits sync started in background..."), indicator: "blue" }, 8);
+                }
+            });
+        });
+
+        frm.page.main.find("#qb-sync-purchases-btn").on("click", function() {
+            frappe.call({
+                method: "quickbooks_integration.api.purchase_expenses_sync.enqueue_sync_purchases",
+                callback: function(r) {
+                    frappe.show_alert({ message: r.message || __("Direct Expenses sync started in background..."), indicator: "blue" }, 8);
                 }
             });
         });
