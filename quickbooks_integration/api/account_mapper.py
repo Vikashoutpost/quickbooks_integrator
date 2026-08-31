@@ -100,11 +100,13 @@ MASTER_ACCOUNT_MAP = {
     "installation and technical charges": "401060 - COGS Device : Installation and Technical Charges - MTL",
     "102": "401060 - COGS Device : Installation and Technical Charges - MTL",
     "cost of saas": "401080 - COGS Logistics - MTL",
-    "biker services expenses": "401080 - COGS Logistics - MTL",
-    "driver services expenses": "401080 - COGS Logistics - MTL",
-    "fuel for riders": "401080 - COGS Logistics - MTL",
+    "biker services expenses": "401010 - COGS Logistics : Biker Service Expense - MTL",
+    "driver services expenses": "401020 - COGS Logistics : Driver Service Expenses - MTL",
+    "fuel for riders": "401010 - COGS Logistics : Biker Service Expense - MTL",
+    "freight and delivery - cos": "401050 - COGS Device : Freight and Delivery Charges - MTL",
+    "freight and delivery": "401050 - COGS Device : Freight and Delivery Charges - MTL",
 
-    # 11. Operating Expenses
+    # 11. Operating Expenses & Other P&L
     "audit expenses": "403080 - Audit Expenses - MTL",
     "bank charges": "403100 - Bank Charges - MTL",
     "business promotion and marketing": "403120 - Business Promotion And Marketing - MTL",
@@ -114,6 +116,10 @@ MASTER_ACCOUNT_MAP = {
     "electricity expenses": "403170 - Electricity Expenses - MTL",
     "insurance- medical": "403250 - Insurance - Medical - MTL",
     "insurance - medical": "403250 - Insurance - Medical - MTL",
+    "insurance - general": "403240 - Insurance - General - MTL",
+    "insurance general": "403240 - Insurance - General - MTL",
+    "interest expense": "403260 - Interest Expenses - MTL",
+    "internet and domain expenses": "403270 - Internet And Domain Expenses - MTL",
     "98": "403250 - Insurance - Medical - MTL",
     "legal and professional fees": "403280 - Legal And Professional Fees - MTL",
     "meals and entertainment": "403310 - Meals And Entertainment - MTL",
@@ -128,6 +134,17 @@ MASTER_ACCOUNT_MAP = {
     "staff training and welfare": "403460 - Staff Training And Welfare - MTL",
     "stationery and printing": "403470 - Stationery And Printing - MTL",
     "transportation": "403490 - Transportation - MTL",
+    "travel expenses - general and admin expenses": "403510 - Travel Expenses - MTL",
+    "travel expenses": "403510 - Travel Expenses - MTL",
+    "statutory fines": "403480 - Statutory Fines - MTL",
+    "foreign exchange fluctuation": "403200 - Exchange Gain/Loss - MTL",
+    "gain on disposal of assets": "312020 - Gain/Loss on disposal of assets - MTL",
+    "interest income": "312010 - Interest Income - MTL",
+    "deferred revenue": "226020 - Deferred Revenue - MTL",
+    "paye": "230020 - PAYE Payable - MTL",
+    "pension contribution payable": "229130 - Provision for Pension - MTL",
+    "movam inc. due to/from": "224060 - Movam Inc - MTL",
+    "movam inc": "224060 - Movam Inc - MTL",
 }
 
 
