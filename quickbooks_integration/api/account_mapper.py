@@ -184,6 +184,9 @@ def resolve_account_master(acc_ref, company, classification=None, default_acc=No
     if not acc_ref:
         return _get_fallback_by_classification(classification, default_acc, cache)
 
+    if isinstance(acc_ref, str):
+        acc_ref = {"name": acc_ref, "value": ""}
+
     val = str(acc_ref.get("value") or "").strip()
     name = (acc_ref.get("name") or "").strip().lower()
 

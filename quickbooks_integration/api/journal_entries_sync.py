@@ -3,8 +3,7 @@ import requests
 import json
 from frappe.utils import getdate, nowdate, flt
 from intuitlib.client import AuthClient
-from quickbooks_integration.api.bill_sync import MOVAM_ACCOUNT_MAPPING
-from quickbooks_integration.api.invoice_sync import SALES_ACCOUNT_MAPPING
+from quickbooks_integration.api.account_mapper import resolve_account_master, build_account_cache, MASTER_ACCOUNT_MAP
 
 
 EXTRA_JE_MAPPING = {
@@ -251,10 +250,14 @@ def sync_quickbooks_journal_entries(user=None):
         cache = build_account_cache(company)
 
         def resolve_account(acc_ref, txn_curr):
-            acc_name = (acc_ref.get("name") or "").strip()
-            acc_val = (acc_ref.get("value") or "").strip()
+            if isinstance(acc_ref, dict):
+                acc_name = (acc_ref.get("name") or "").strip()
+                acc_val = (acc_ref.get("value") or "").strip()
+            else:
+                acc_name = str(acc_ref or "").strip()
+                acc_val = ""
             
-            res = resolve_account_master(acc_ref, company, cache=cache)
+            res = resolve_account_master(acc_name, acc_val, company, cache=cache)
             if res == "225010 - Trade Creditors - NGN - MTL" and txn_curr == "USD":
                 return "225020 - Trade Creditors - USD - MTL"
             if res == "121010 - Trade Receivables - NGN - MTL" and txn_curr == "USD":
