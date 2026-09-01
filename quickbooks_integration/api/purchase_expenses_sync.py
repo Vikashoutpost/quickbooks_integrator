@@ -70,14 +70,44 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
                 break
             start += max_results
 
+        from quickbooks_integration.api.banking_and_returns_sync import prefetch_all_attachments
+
+        # 1. High-Performance Pre-fetching
+        attachments_map = prefetch_all_attachments(headers, base_url, realm_id, "Purchase") if fetch_files else {}
+        
+        existing_jes_map = {
+            r.custom_quickbooks_je_id: (r.name, r.docstatus)
+            for r in frappe.db.sql("SELECT name, custom_quickbooks_je_id, docstatus FROM `tabJournal Entry` WHERE custom_quickbooks_je_id LIKE 'EXP-%'", as_dict=True)
+        }
+
+        cust_cache = {
+            c.custom_quickbooks_customer_id: c.name
+            for c in frappe.db.sql("SELECT name, custom_quickbooks_customer_id FROM `tabCustomer` WHERE custom_quickbooks_customer_id IS NOT NULL", as_dict=True)
+        }
+        supp_cache = {
+            s.custom_quickbooks_vendor_id: s.name
+            for s in frappe.db.sql("SELECT name, custom_quickbooks_vendor_id FROM `tabSupplier` WHERE custom_quickbooks_vendor_id IS NOT NULL", as_dict=True)
+        }
+
         total = len(all_purchases)
         created, updated, files_count = 0, 0, 0
 
         for idx, p in enumerate(all_purchases, 1):
-            if idx % 20 == 0 and frappe.cache().get_value("qb_sync_cancel_requested"):
+            if idx % 50 == 0 and frappe.cache().get_value("qb_sync_cancel_requested"):
                 frappe.cache().delete_value("qb_sync_cancel_requested")
                 frappe.db.commit()
                 return f"Direct Expenses sync stopped. Processed {created + updated} records."
+
+            if idx % 100 == 0 or idx == total:
+                try:
+                    frappe.publish_progress(
+                        percent=round((idx / total) * 100),
+                        title="Syncing Direct Expenses",
+                        description=f"Processing {idx} of {total}...",
+                        user=user
+                    )
+                except Exception:
+                    pass
 
             qb_id = p.get("Id")
             tot_amt = flt(p.get("TotalAmt", 0))
@@ -95,12 +125,17 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
 
             entity_ref = p.get("EntityRef", {}) or {}
             entity_type = (entity_ref.get("type") or "Vendor").lower()
+            entity_val = str(entity_ref.get("value") or "").strip()
             supplier = None
             customer = None
             if entity_type == "customer":
-                customer = get_or_create_customer(entity_ref, curr)
+                customer = cust_cache.get(entity_val) or get_or_create_customer(entity_ref, curr)
+                if entity_val and customer:
+                    cust_cache[entity_val] = customer
             else:
-                supplier = get_or_create_supplier(entity_ref, curr)
+                supplier = supp_cache.get(entity_val) or get_or_create_supplier(entity_ref, curr)
+                if entity_val and supplier:
+                    supp_cache[entity_val] = supplier
 
             accounts = []
             total_debit = 0.0
@@ -152,10 +187,10 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
 
                 if acc_type == "Receivable":
                     entry["party_type"] = "Customer"
-                    entry["party"] = customer or get_or_create_customer(entity_ref, curr)
+                    entry["party"] = customer
                 elif acc_type == "Payable":
                     entry["party_type"] = "Supplier"
-                    entry["party"] = supplier or get_or_create_supplier(entity_ref, curr)
+                    entry["party"] = supplier
 
                 accounts.append(entry)
 
@@ -201,10 +236,10 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
             bank_acc_type = bank_info.get("account_type")
             if bank_acc_type == "Receivable":
                 bank_entry["party_type"] = "Customer"
-                bank_entry["party"] = customer or get_or_create_customer(None, curr)
+                bank_entry["party"] = customer
             elif bank_acc_type == "Payable":
                 bank_entry["party_type"] = "Supplier"
-                bank_entry["party"] = supplier or get_or_create_supplier(None, curr)
+                bank_entry["party"] = supplier
 
             accounts.append(bank_entry)
 
@@ -213,10 +248,11 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
             ref_no = f"EXP-{doc_no}" if doc_no and len(str(doc_no)) >= 3 else f"EXP-{qb_id}"
             note = p.get("PrivateNote") or f"Direct Expense QBO - {qb_id}"
 
-            existing_je = frappe.db.get_value("Journal Entry", {"custom_quickbooks_je_id": custom_id}, "name")
-            if existing_je:
-                je = frappe.get_doc("Journal Entry", existing_je)
-                if je.docstatus == 0:
+            existing_tuple = existing_jes_map.get(custom_id)
+            if existing_tuple:
+                existing_je, docstatus = existing_tuple
+                if docstatus == 0:
+                    je = frappe.get_doc("Journal Entry", existing_je)
                     je.accounts = []
                     for a in accounts:
                         je.append("accounts", a)
@@ -256,13 +292,17 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
                 je.submit()
                 created += 1
                 je_name = je.name
-
-            tag_journal_entry(je_name, "QB Expenses")
+                existing_jes_map[custom_id] = (je_name, 1)
 
             if fetch_files:
-                files_count += fetch_entity_attachments(qb_id, je_name, headers, base_url, realm_id, "QB_Expense")
+                preloaded = attachments_map.get(("purchase", str(qb_id)))
+                if preloaded:
+                    files_count += fetch_entity_attachments(
+                        qb_id, je_name, headers, base_url, realm_id,
+                        prefix="QB_Expense", preloaded_attachables=preloaded, entity_type="Purchase"
+                    )
 
-            if (created + updated) % 50 == 0:
+            if (created + updated) % 100 == 0:
                 frappe.db.commit()
 
         frappe.db.commit()

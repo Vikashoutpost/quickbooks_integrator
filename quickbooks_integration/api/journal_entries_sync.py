@@ -111,16 +111,22 @@ def refresh_qb_token(settings):
         return None
 
 
-def fetch_je_attachments(je_id, erp_je_name, headers, base_url, realm_id):
-    """Fetch and attach all files from QuickBooks Attachable for a Journal Entry"""
+def fetch_je_attachments(je_id, erp_je_name, headers, base_url, realm_id, preloaded_attachables=None):
+    """Fetch and attach all files from QuickBooks Attachable for a Journal Entry using pre-fetched metadata"""
     try:
-        endpoint = f"{base_url}/v3/company/{realm_id}/query"
-        query = f"SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Type = 'JournalEntry' AND AttachableRef.EntityRef.Value = '{je_id}'"
-        res = requests.post(endpoint, headers=headers, data=query, timeout=30)
-        if res.status_code != 200:
+        if preloaded_attachables is not None:
+            attachables = preloaded_attachables
+        else:
+            endpoint = f"{base_url}/v3/company/{realm_id}/query"
+            query = f"SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Type = 'JournalEntry' AND AttachableRef.EntityRef.Value = '{je_id}'"
+            res = requests.post(endpoint, headers=headers, data=query, timeout=30)
+            if res.status_code != 200:
+                return 0
+            attachables = res.json().get("QueryResponse", {}).get("Attachable", [])
+
+        if not attachables:
             return 0
 
-        attachables = res.json().get("QueryResponse", {}).get("Attachable", [])
         attached_count = 0
 
         for att in attachables:
@@ -245,9 +251,26 @@ def sync_quickbooks_journal_entries(user=None):
             if acc.account_number:
                 acc_by_num[acc.account_number.strip()] = acc
 
-        from quickbooks_integration.api.account_mapper import resolve_account_master, build_account_cache
-
+        frappe.flags.in_import = True
         cache = build_account_cache(company)
+
+        from quickbooks_integration.api.banking_and_returns_sync import prefetch_all_attachments
+
+        attachments_map = prefetch_all_attachments(headers, base_url, realm_id, "JournalEntry")
+
+        existing_jes_map = {
+            r.custom_quickbooks_je_id: (r.name, r.docstatus)
+            for r in frappe.db.sql("SELECT name, custom_quickbooks_je_id, docstatus FROM `tabJournal Entry` WHERE custom_quickbooks_je_id LIKE 'JE-%'", as_dict=True)
+        }
+
+        cust_cache = {
+            c.custom_quickbooks_customer_id: c.name
+            for c in frappe.db.sql("SELECT name, custom_quickbooks_customer_id FROM `tabCustomer` WHERE custom_quickbooks_customer_id IS NOT NULL", as_dict=True)
+        }
+        supp_cache = {
+            s.custom_quickbooks_vendor_id: s.name
+            for s in frappe.db.sql("SELECT name, custom_quickbooks_vendor_id FROM `tabSupplier` WHERE custom_quickbooks_vendor_id IS NOT NULL", as_dict=True)
+        }
 
         def resolve_account(acc_ref, txn_curr):
             if isinstance(acc_ref, dict):
@@ -298,7 +321,7 @@ def sync_quickbooks_journal_entries(user=None):
         total_jes = len(all_journal_entries)
 
         for idx, je in enumerate(all_journal_entries, 1):
-            if idx % 10 == 0 and frappe.cache().get_value("qb_sync_cancel_requested"):
+            if idx % 50 == 0 and frappe.cache().get_value("qb_sync_cancel_requested"):
                 frappe.cache().delete_value("qb_sync_cancel_requested")
                 frappe.db.commit()
                 msg = f"Sync was stopped by user. Processed {created_je + updated_je} entries."
@@ -306,7 +329,7 @@ def sync_quickbooks_journal_entries(user=None):
                     frappe.publish_realtime("msgprint", msg, user=user)
                 return msg
 
-            if idx % 25 == 0 or idx == total_jes:
+            if idx % 100 == 0 or idx == total_jes:
                 try:
                     frappe.publish_progress(
                         percent=round((idx / total_jes) * 100),
@@ -507,13 +530,13 @@ def sync_quickbooks_journal_entries(user=None):
 
                 voucher_type = "Depreciation Entry" if has_depreciation else "Journal Entry"
                 cheque_ref = doc_number if (doc_number and len(doc_number) >= 3) else f"QB-JE-{qbo_je_id}"
-                existing_je = frappe.db.get_value("Journal Entry", {"custom_quickbooks_je_id": f"JE-{qbo_je_id}", "docstatus": ["!=", 2]}, "name")
+                je_key = f"JE-{qbo_je_id}"
+                existing_tuple = existing_jes_map.get(je_key)
 
-                if existing_je:
-                    je_status = frappe.db.get_value("Journal Entry", existing_je, "docstatus")
+                if existing_tuple:
+                    existing_je, je_status = existing_tuple
                     je_name = existing_je
                     if je_status == 1:
-                        # Cancel existing unposted/old JE to replace with correct GL mapping
                         je_doc = frappe.get_doc("Journal Entry", existing_je)
                         je_doc.cancel()
                     
@@ -526,7 +549,7 @@ def sync_quickbooks_journal_entries(user=None):
                         "cheque_date": getdate(raw_txn_date),
                         "multi_currency": 1,
                         "accounts": accounts,
-                        "custom_quickbooks_je_id": f"JE-{qbo_je_id}",
+                        "custom_quickbooks_je_id": je_key,
                         "user_remark": f"QuickBooks JE {doc_number or qbo_je_id}",
                         "_user_tags": ",QB Journals,"
                     })
@@ -537,6 +560,8 @@ def sync_quickbooks_journal_entries(user=None):
                     je_doc.flags.ignore_permissions = True
                     je_doc.submit()
                     updated_je += 1
+                    je_name = je_doc.name
+                    existing_jes_map[je_key] = (je_name, 1)
                 else:
                     je_doc = frappe.get_doc({
                         "doctype": "Journal Entry",
@@ -547,7 +572,7 @@ def sync_quickbooks_journal_entries(user=None):
                         "cheque_date": getdate(raw_txn_date),
                         "multi_currency": 1,
                         "accounts": accounts,
-                        "custom_quickbooks_je_id": f"JE-{qbo_je_id}",
+                        "custom_quickbooks_je_id": je_key,
                         "user_remark": f"QuickBooks JE {doc_number or qbo_je_id}",
                         "_user_tags": ",QB Journals,"
                     })
@@ -559,28 +584,15 @@ def sync_quickbooks_journal_entries(user=None):
                     je_doc.submit()
                     created_je += 1
                     je_name = je_doc.name
+                    existing_jes_map[je_key] = (je_name, 1)
 
-                # Add tags to Frappe Tag system
-                try:
-                    frappe.db.set_value("Journal Entry", je_name, "_user_tags", ",QB Journals,")
-                    for tag in ["QB Journals"]:
-                        if not frappe.db.exists("Tag", tag):
-                            frappe.get_doc({"doctype": "Tag", "name": tag}).insert(ignore_permissions=True)
-                        if not frappe.db.exists("Tag Link", {"document_type": "Journal Entry", "document_name": je_name, "tag": tag}):
-                            frappe.get_doc({
-                                "doctype": "Tag Link",
-                                "document_type": "Journal Entry",
-                                "document_name": je_name,
-                                "tag": tag
-                            }).insert(ignore_permissions=True)
-                except Exception:
-                    pass
+                # Fetch attachments using preloaded map
+                preloaded = attachments_map.get(("journalentry", str(qbo_je_id)))
+                if preloaded:
+                    att_count = fetch_je_attachments(qbo_je_id, je_name, headers, base_url, realm_id, preloaded_attachables=preloaded)
+                    total_attachments += att_count
 
-                # Fetch attachments
-                att_count = fetch_je_attachments(qbo_je_id, je_name, headers, base_url, realm_id)
-                total_attachments += att_count
-
-                if (created_je + updated_je) % 50 == 0:
+                if (created_je + updated_je) % 100 == 0:
                     frappe.db.commit()
 
             except Exception as inner_e:

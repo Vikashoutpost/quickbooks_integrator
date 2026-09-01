@@ -49,18 +49,23 @@ def get_expense_account_for_line(line, company, default_expense):
     return default_expense
 
 
-def fetch_bill_attachments(bill_id, je_name, headers, base_url, realm_id):
-    """Fetch and attach all files from QuickBooks Attachable for a Bill"""
+def fetch_bill_attachments(bill_id, je_name, headers, base_url, realm_id, preloaded_attachables=None):
+    """Fetch and attach all files from QuickBooks Attachable for a Bill using pre-fetched metadata"""
     try:
-        endpoint = f"{base_url}/v3/company/{realm_id}/query"
-        query = f"SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Value = '{bill_id}'"
-        res = requests.post(endpoint, headers=headers, data=query, timeout=30)
-        if res.status_code != 200:
+        if preloaded_attachables is not None:
+            attachables = preloaded_attachables
+        else:
+            endpoint = f"{base_url}/v3/company/{realm_id}/query"
+            query = f"SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Value = '{bill_id}'"
+            res = requests.post(endpoint, headers=headers, data=query, timeout=30)
+            if res.status_code != 200:
+                return 0
+            attachables = res.json().get("QueryResponse", {}).get("Attachable", [])
+
+        if not attachables:
             return 0
 
-        attachables = res.json().get("QueryResponse", {}).get("Attachable", [])
         attached_count = 0
-
         for att in attachables:
             file_name = att.get("FileName") or f"QB_Bill_Attachment_{att.get('Id')}.bin"
             att_id = att.get("Id")
@@ -102,7 +107,7 @@ def fetch_bill_attachments(bill_id, je_name, headers, base_url, realm_id):
 
         return attached_count
     except Exception as e:
-        frappe.log_error(f"Error fetching attachments for bill {bill_id}: {str(e)}", "QB Bill Attachment Sync")
+        frappe.log_error(f"Error fetching attachments for Bill {bill_id}: {str(e)}", "QB Bill Attachment Sync")
         return 0
 
 
@@ -151,9 +156,26 @@ def sync_quickbooks_bills(user=None):
         default_channel = "QuickBooks"
         default_department = "QuickBooks - MTL"
 
+        frappe.flags.in_import = True
+        cache = build_account_cache(company)
+
+        from quickbooks_integration.api.banking_and_returns_sync import prefetch_all_attachments
+
+        attachments_map = prefetch_all_attachments(headers, base_url, realm_id, "Bill")
+
+        existing_jes_map = {
+            r.custom_quickbooks_je_id: (r.name, r.docstatus)
+            for r in frappe.db.sql("SELECT name, custom_quickbooks_je_id, docstatus FROM `tabJournal Entry` WHERE custom_quickbooks_je_id IS NOT NULL", as_dict=True)
+        }
+
+        supp_cache = {
+            s.custom_quickbooks_vendor_id: s.name
+            for s in frappe.db.sql("SELECT name, custom_quickbooks_vendor_id FROM `tabSupplier` WHERE custom_quickbooks_vendor_id IS NOT NULL", as_dict=True)
+        }
+
         all_bills = []
         start_position = 1
-        max_results = 500
+        max_results = 1000
 
         while True:
             query = f"SELECT * FROM Bill STARTPOSITION {start_position} MAXRESULTS {max_results}"
@@ -188,7 +210,7 @@ def sync_quickbooks_bills(user=None):
         skipped = []
 
         for idx, b in enumerate(all_bills, 1):
-            if idx % 10 == 0 and frappe.cache().get_value("qb_sync_cancel_requested"):
+            if idx % 50 == 0 and frappe.cache().get_value("qb_sync_cancel_requested"):
                 frappe.cache().delete_value("qb_sync_cancel_requested")
                 frappe.db.commit()
                 msg = f"Bill sync stopped by user. Processed {created_je + updated_je} bills."
@@ -196,7 +218,7 @@ def sync_quickbooks_bills(user=None):
                     frappe.publish_realtime("msgprint", msg, user=user)
                 return msg
 
-            if idx % 25 == 0 or idx == total_bills:
+            if idx % 100 == 0 or idx == total_bills:
                 try:
                     frappe.publish_progress(
                         percent=round((idx / max(total_bills, 1)) * 100),
@@ -208,10 +230,10 @@ def sync_quickbooks_bills(user=None):
                     pass
 
             try:
-                qb_id = b.get("Id")
+                qb_id = str(b.get("Id") or "").strip()
                 bill_no = b.get("DocNumber")
                 vendor_ref = b.get("VendorRef", {}) or {}
-                vendor_id = vendor_ref.get("value")
+                vendor_id = str(vendor_ref.get("value") or "").strip()
                 vendor_name = vendor_ref.get("name") or f"QuickBooks Vendor {vendor_id}"
 
                 raw_txn_date = b.get("TxnDate") or nowdate()
@@ -222,9 +244,7 @@ def sync_quickbooks_bills(user=None):
                     exchange_rate = 1
 
                 # Supplier mapping
-                supplier = None
-                if vendor_id:
-                    supplier = frappe.db.get_value("Supplier", {"custom_quickbooks_vendor_id": vendor_id}, "name")
+                supplier = supp_cache.get(vendor_id)
                 if not supplier and vendor_name:
                     supplier = frappe.db.get_value("Supplier", {"supplier_name": vendor_name}, "name") or \
                                frappe.db.get_value("Supplier", {"name": vendor_name}, "name")
@@ -241,6 +261,8 @@ def sync_quickbooks_bills(user=None):
                         supp_doc.flags.ignore_mandatory = True
                         supp_doc.insert(ignore_permissions=True)
                         supplier = supp_doc.name
+                        if vendor_id:
+                            supp_cache[vendor_id] = supplier
                     except Exception:
                         supplier = vendor_name
 
@@ -305,12 +327,13 @@ def sync_quickbooks_bills(user=None):
 
                 posting_date, cheque_date = adjust_due_date_for_je(raw_txn_date, raw_due_date)
                 cheque_ref = bill_no if bill_no and len(str(bill_no)) >= 3 else f"BILL-{bill_no or qb_id}"
-                existing_je = frappe.db.get_value("Journal Entry", {"custom_quickbooks_je_id": qb_id}, "name")
+                existing_tuple = existing_jes_map.get(qb_id)
                 voucher_type = "Depreciation Entry" if has_depreciation_account else "Journal Entry"
 
-                if existing_je:
-                    je = frappe.get_doc("Journal Entry", existing_je)
-                    if je.docstatus == 0:
+                if existing_tuple:
+                    existing_je, docstatus = existing_tuple
+                    if docstatus == 0:
+                        je = frappe.get_doc("Journal Entry", existing_je)
                         je.voucher_type = voucher_type
                         je.accounts = []
                         for acc in accounts:
@@ -353,27 +376,15 @@ def sync_quickbooks_bills(user=None):
                     je.submit()
                     created_je += 1
                     je_name = je.name
-
-                # Add Tag
-                try:
-                    frappe.db.set_value("Journal Entry", je_name, "_user_tags", ",QB Bills,")
-                    if not frappe.db.exists("Tag", "QB Bills"):
-                        frappe.get_doc({"doctype": "Tag", "name": "QB Bills"}).insert(ignore_permissions=True)
-                    if not frappe.db.exists("Tag Link", {"document_type": "Journal Entry", "document_name": je_name, "tag": "QB Bills"}):
-                        frappe.get_doc({
-                            "doctype": "Tag Link",
-                            "document_type": "Journal Entry",
-                            "document_name": je_name,
-                            "tag": "QB Bills"
-                        }).insert(ignore_permissions=True)
-                except Exception:
-                    pass
+                    existing_jes_map[qb_id] = (je_name, 1)
 
                 # Attachments
-                att_count = fetch_bill_attachments(qb_id, je_name, headers, base_url, realm_id)
-                total_attachments += att_count
+                preloaded = attachments_map.get(("bill", qb_id))
+                if preloaded:
+                    att_count = fetch_bill_attachments(qb_id, je_name, headers, base_url, realm_id, preloaded_attachables=preloaded)
+                    total_attachments += att_count
 
-                if (created_je + updated_je) % 50 == 0:
+                if (created_je + updated_je) % 100 == 0:
                     frappe.db.commit()
 
             except Exception as inner_e:
