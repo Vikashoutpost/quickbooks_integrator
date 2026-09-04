@@ -86,16 +86,20 @@ def resolve_bank_account(bank_ref, currency="NGN", company="Movam Technologies L
     return "119020 - Globus Bank - MTL" if currency == "NGN" else "119050 - Globus Bank USD - 5000032967 - MTL"
 
 
-def fetch_payment_attachments(qb_id, je_name, headers, base_url, realm_id):
+def fetch_payment_attachments(qb_id, je_name, headers, base_url, realm_id, attachables=None):
     """Fetch and attach files from QuickBooks Attachable for Payment/BillPayment"""
     try:
-        endpoint = f"{base_url}/v3/company/{realm_id}/query"
-        query = f"SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Value = '{qb_id}'"
-        res = requests.post(endpoint, headers=headers, data=query, timeout=30)
-        if res.status_code != 200:
+        if attachables is None:
+            endpoint = f"{base_url}/v3/company/{realm_id}/query"
+            query = f"SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Value = '{qb_id}'"
+            res = requests.post(endpoint, headers=headers, data=query, timeout=30)
+            if res.status_code != 200:
+                return 0
+            attachables = res.json().get("QueryResponse", {}).get("Attachable", [])
+
+        if not attachables:
             return 0
 
-        attachables = res.json().get("QueryResponse", {}).get("Attachable", [])
         attached_count = 0
 
         for att in attachables:
@@ -188,6 +192,31 @@ def sync_quickbooks_payments(user=None):
         total_attachments = 0
         skipped = []
 
+        # Pre-fetch existing submitted payments to skip them in O(1) memory lookup
+        existing_payments = set(frappe.db.sql_list("SELECT custom_quickbooks_je_id FROM `tabJournal Entry` WHERE docstatus = 1 AND custom_quickbooks_je_id IS NOT NULL"))
+
+        # Pre-load attachables map in bulk (eliminates thousands of slow individual queries)
+        attachable_map = {}
+        try:
+            start_att = 1
+            for _ in range(10):
+                q = f"SELECT * FROM Attachable STARTPOSITION {start_att} MAXRESULTS 1000"
+                r = requests.post(endpoint, headers=headers, data=q, timeout=30)
+                if r.status_code == 200:
+                    atts = r.json().get("QueryResponse", {}).get("Attachable", [])
+                    for a in atts:
+                        for ref in a.get("AttachableRef", []):
+                            val = ref.get("EntityRef", {}).get("value")
+                            if val:
+                                attachable_map.setdefault(str(val), []).append(a)
+                    if len(atts) < 1000:
+                        break
+                    start_att += 1000
+                else:
+                    break
+        except Exception as e:
+            frappe.log_error(f"Attachable pre-fetch warning: {str(e)}", "Attachable Bulk Fetch")
+
         # =========================================================================
         # 1. FETCH & SYNC CUSTOMER PAYMENTS (`Payment`)
         # =========================================================================
@@ -244,6 +273,10 @@ def sync_quickbooks_payments(user=None):
 
             try:
                 qb_id = p.get("Id")
+                custom_je_id = f"PAY-{qb_id}"
+                if custom_je_id in existing_payments:
+                    continue
+
                 doc_number = p.get("DocNumber")
                 total_amt = flt(p.get("TotalAmt", 0))
                 if total_amt <= 0:
@@ -393,7 +426,7 @@ def sync_quickbooks_payments(user=None):
                     pass
 
                 # Attachments
-                att_count = fetch_payment_attachments(qb_id, je_name, headers, base_url, realm_id)
+                att_count = fetch_payment_attachments(qb_id, je_name, headers, base_url, realm_id, attachables=attachable_map.get(str(qb_id), []))
                 total_attachments += att_count
 
                 if (created_count + updated_count) % 50 == 0:
@@ -460,6 +493,10 @@ def sync_quickbooks_payments(user=None):
 
             try:
                 qb_id = bp.get("Id")
+                custom_je_id = f"BILLPAY-{qb_id}"
+                if custom_je_id in existing_payments:
+                    continue
+
                 doc_number = bp.get("DocNumber")
                 total_amt = flt(bp.get("TotalAmt", 0))
                 if total_amt <= 0:
@@ -611,7 +648,7 @@ def sync_quickbooks_payments(user=None):
                     pass
 
                 # Attachments
-                att_count = fetch_payment_attachments(qb_id, je_name, headers, base_url, realm_id)
+                att_count = fetch_payment_attachments(qb_id, je_name, headers, base_url, realm_id, attachables=attachable_map.get(str(qb_id), []))
                 total_attachments += att_count
 
                 if (created_count + updated_count) % 50 == 0:

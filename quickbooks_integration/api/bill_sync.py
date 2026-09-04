@@ -38,13 +38,39 @@ from quickbooks_integration.api.account_mapper import resolve_account_master, bu
 
 
 def get_expense_account_for_line(line, company, default_expense):
-    """Resolve the ERPNext Account using Centralized Account Mapper"""
+    """Resolve the ERPNext Account using Centralized Account Mapper and Item Master"""
     acc_detail = line.get("AccountBasedExpenseLineDetail", {}) or {}
     item_detail = line.get("ItemBasedExpenseLineDetail", {}) or {}
 
-    acc_ref = acc_detail.get("AccountRef", {}) or item_detail.get("ItemRef", {}) or {}
-    if acc_ref:
-        return resolve_account_master(acc_ref, company, default_acc=default_expense)
+    # 1. Direct GL Account Line
+    if acc_detail.get("AccountRef"):
+        return resolve_account_master(acc_detail.get("AccountRef"), company, default_acc=default_expense)
+
+    # 2. Item-based Line (GPS Tracker, Teltonika, Devices, Subscriptions)
+    if item_detail.get("ItemRef"):
+        item_ref = item_detail.get("ItemRef", {})
+        item_id = str(item_ref.get("value") or "").strip()
+        item_name = (item_ref.get("name") or "").strip().lower()
+
+        # Check if item exists in ERPNext Item Master
+        item_code = frappe.db.get_value("Item", {"custom_quickbooks_item_id": item_id}, "name") or \
+                    frappe.db.get_value("Item", {"item_name": item_ref.get("name")}, "name") or \
+                    frappe.db.get_value("Item", {"item_code": item_ref.get("name")}, "name")
+
+        if item_code:
+            item_exp = frappe.db.get_value("Item Default", {"parent": item_code, "company": company}, "expense_account")
+            if item_exp:
+                return item_exp
+
+        # Intelligent fallback by item keywords
+        if any(k in item_name for k in ["tracker", "device", "teltonika", "hardware", "gps", "fmc", "fmb"]):
+            return "401040 - COGS Device - MTL"
+        elif any(k in item_name for k in ["sub", "internet", "cloud", "saas", "software", "license"]):
+            return "403160 - Dues And Subscriptions - MTL"
+        elif "install" in item_name:
+            return "401060 - COGS Device : Installation and Technical Charges - MTL"
+
+        return "401040 - COGS Device - MTL"
 
     return default_expense
 
@@ -78,7 +104,7 @@ def fetch_bill_attachments(bill_id, je_name, headers, base_url, realm_id, preloa
 
             if temp_uri:
                 try:
-                    r = requests.get(temp_uri, timeout=30)
+                    r = requests.get(temp_uri, timeout=10)
                     if r.status_code == 200:
                         file_content = r.content
                 except Exception:
@@ -87,7 +113,7 @@ def fetch_bill_attachments(bill_id, je_name, headers, base_url, realm_id, preloa
             if not file_content:
                 try:
                     dl_url = f"{base_url}/v3/company/{realm_id}/download/{att_id}"
-                    r = requests.get(dl_url, headers={"Authorization": headers.get("Authorization")}, timeout=30)
+                    r = requests.get(dl_url, headers={"Authorization": headers.get("Authorization")}, timeout=10)
                     if r.status_code == 200:
                         file_content = r.content
                 except Exception:
@@ -172,6 +198,10 @@ def sync_quickbooks_bills(user=None):
             s.custom_quickbooks_vendor_id: s.name
             for s in frappe.db.sql("SELECT name, custom_quickbooks_vendor_id FROM `tabSupplier` WHERE custom_quickbooks_vendor_id IS NOT NULL", as_dict=True)
         }
+        supp_name_cache = {
+            (s.supplier_name or "").lower().strip(): s.name
+            for s in frappe.db.sql("SELECT name, supplier_name FROM `tabSupplier` WHERE supplier_name IS NOT NULL", as_dict=True)
+        }
 
         all_bills = []
         start_position = 1
@@ -246,6 +276,8 @@ def sync_quickbooks_bills(user=None):
                 # Supplier mapping
                 supplier = supp_cache.get(vendor_id)
                 if not supplier and vendor_name:
+                    supplier = supp_name_cache.get(vendor_name.lower().strip())
+                if not supplier and vendor_name:
                     supplier = frappe.db.get_value("Supplier", {"supplier_name": vendor_name}, "name") or \
                                frappe.db.get_value("Supplier", {"name": vendor_name}, "name")
                 if not supplier:
@@ -263,67 +295,159 @@ def sync_quickbooks_bills(user=None):
                         supplier = supp_doc.name
                         if vendor_id:
                             supp_cache[vendor_id] = supplier
+                        if vendor_name:
+                            supp_name_cache[vendor_name.lower().strip()] = supplier
                     except Exception:
-                        supplier = vendor_name
+                        supplier = frappe.db.get_value("Supplier", {"supplier_name": vendor_name}, "name") or \
+                                   frappe.db.get_value("Supplier", {"name": vendor_name}, "name") or vendor_name
 
                 lines = b.get("Line", []) or []
                 accounts = []
-                total_credit = 0.0
+                total_line_debits = 0.0
+                total_line_credits = 0.0
                 has_depreciation_account = False
 
                 for line in lines:
                     amount = flt(line.get("Amount", 0), 2)
-                    if not amount or amount <= 0:
+                    if abs(amount) < 0.001:
                         continue
 
                     expense_account = get_expense_account_for_line(line, company, default_expense)
                     if not expense_account:
                         expense_account = default_expense
 
-                    acc_type = frappe.db.get_value("Account", expense_account, "account_type")
+                    acc_info = cache["raw"].get(expense_account, {})
+                    acc_curr = acc_info.get("account_currency") or frappe.db.get_value("Account", expense_account, "account_currency") or company_currency
+                    acc_type = acc_info.get("account_type") or frappe.db.get_value("Account", expense_account, "account_type")
                     if acc_type == "Accumulated Depreciation":
                         has_depreciation_account = True
 
+                    line_rate = exchange_rate
+                    abs_amount = abs(amount)
+                    line_amt = abs_amount
+                    if acc_curr == "NGN" and currency == "USD":
+                        line_amt = round(abs_amount * exchange_rate, 2)
+                        line_rate = 1.0
+                    elif acc_curr == "USD" and currency == "NGN":
+                        line_amt = round(abs_amount / exchange_rate, 2)
+                        line_rate = exchange_rate
+
                     desc = line.get("Description") or "QuickBooks Bill Line"
 
-                    acc_entry = {
-                        "account": expense_account,
-                        "debit_in_account_currency": amount,
+                    if amount > 0:
+                        # Standard Expense / Asset Line -> Debit
+                        acc_entry = {
+                            "account": expense_account,
+                            "debit_in_account_currency": line_amt,
+                            "credit_in_account_currency": 0,
+                            "debit": round(line_amt * line_rate, 2),
+                            "credit": 0,
+                            "account_currency": acc_curr,
+                            "exchange_rate": line_rate,
+                            "cost_center": default_cost_center,
+                            "channel": default_channel,
+                            "department": default_department,
+                            "user_remark": desc[:140] if desc else "bills of QBO",
+                        }
+                        total_line_debits += round(line_amt * line_rate, 2)
+                    else:
+                        # Negative Line (PAYE, Pension, WHT deductions, or credits) -> Credit
+                        acc_entry = {
+                            "account": expense_account,
+                            "debit_in_account_currency": 0,
+                            "credit_in_account_currency": line_amt,
+                            "debit": 0,
+                            "credit": round(line_amt * line_rate, 2),
+                            "account_currency": acc_curr,
+                            "exchange_rate": line_rate,
+                            "cost_center": default_cost_center,
+                            "channel": default_channel,
+                            "department": default_department,
+                            "user_remark": desc[:140] if desc else "bill deduction",
+                        }
+                        total_line_credits += round(line_amt * line_rate, 2)
+
+                    accounts.append(acc_entry)
+
+                # Process Bill Tax (Input VAT) from TxnTaxDetail
+                tax_detail = b.get("TxnTaxDetail", {}) or {}
+                total_tax = flt(tax_detail.get("TotalTax", 0), 2)
+                if total_tax > 0:
+                    vat_account = "230040 - VAT Payable - MTL"
+                    acc_curr = frappe.db.get_value("Account", vat_account, "account_currency") or company_currency
+                    if acc_curr == "NGN" and currency == "USD":
+                        tax_val = round(total_tax * exchange_rate, 2)
+                        acc_rate = 1.0
+                    elif acc_curr == "USD" and currency == "NGN":
+                        tax_val = round(total_tax / exchange_rate, 2)
+                        acc_rate = exchange_rate
+                    else:
+                        tax_val = total_tax
+                        acc_rate = exchange_rate
+
+                    accounts.append({
+                        "account": vat_account,
+                        "debit_in_account_currency": tax_val,
                         "credit_in_account_currency": 0,
-                        "exchange_rate": exchange_rate,
+                        "debit": round(tax_val * acc_rate, 2),
+                        "credit": 0,
+                        "account_currency": acc_curr,
+                        "exchange_rate": acc_rate,
                         "cost_center": default_cost_center,
                         "channel": default_channel,
                         "department": default_department,
-                        "user_remark": desc[:140] if desc else "bills of QBO",
-                    }
+                        "user_remark": f"VAT for Bill {bill_no or qb_id}",
+                    })
+                    total_line_debits += round(tax_val * acc_rate, 2)
 
-                    if acc_type in ["Payable", "Receivable"]:
-                        acc_entry["party_type"] = "Supplier"
-                        acc_entry["party"] = supplier
-
-                    accounts.append(acc_entry)
-                    total_credit += amount
-
-                if not accounts or total_credit <= 0:
+                if not accounts or total_line_debits <= 0:
                     skipped.append(f"Bill {bill_no or qb_id} skipped - No valid debit amounts")
                     continue
 
-                supp_curr = frappe.db.get_value("Supplier", supplier, "default_currency") or currency
-                payable_account = "225020 - Trade Creditors - USD - MTL" if (supp_curr == "USD" or currency == "USD") else default_payable
+                payable_account = "225020 - Trade Creditors - USD - MTL" if currency == "USD" else default_payable
+                pay_acc_curr = frappe.db.get_value("Account", payable_account, "account_currency") or company_currency
 
-                party_acc_entry = {
-                    "account": payable_account,
-                    "credit_in_account_currency": round(total_credit, 2),
-                    "debit_in_account_currency": 0,
-                    "party_type": "Supplier",
-                    "party": supplier,
-                    "cost_center": default_cost_center,
-                    "channel": default_channel,
-                    "department": default_department,
-                    "exchange_rate": exchange_rate,
-                    "user_remark": f"QuickBooks Bill {bill_no or qb_id}",
-                }
-                accounts.append(party_acc_entry)
+                bill_total = flt(b.get("TotalAmt", 0), 2)
+                net_line_base = round(total_line_debits - total_line_credits, 2)
+
+                if pay_acc_curr == "USD":
+                    pay_amt_curr = bill_total if bill_total > 0 else round(net_line_base / exchange_rate, 2)
+                    pay_amt_base = round(pay_amt_curr * exchange_rate, 2)
+                    pay_rate = exchange_rate
+                else:
+                    if currency == "USD" and bill_total > 0:
+                        pay_amt_curr = round(bill_total * exchange_rate, 2)
+                    else:
+                        pay_amt_curr = bill_total if bill_total > 0 else net_line_base
+                    pay_amt_base = pay_amt_curr
+                    pay_rate = 1.0
+
+                if pay_amt_base > 0:
+                    party_acc_entry = {
+                        "account": payable_account,
+                        "credit_in_account_currency": pay_amt_curr,
+                        "debit_in_account_currency": 0,
+                        "credit": pay_amt_base,
+                        "debit": 0,
+                        "account_currency": pay_acc_curr,
+                        "party_type": "Supplier",
+                        "party": supplier,
+                        "cost_center": default_cost_center,
+                        "channel": default_channel,
+                        "department": default_department,
+                        "exchange_rate": pay_rate,
+                        "user_remark": f"QuickBooks Bill {bill_no or qb_id}",
+                    }
+                    accounts.append(party_acc_entry)
+
+                # Ensure JE is perfectly balanced in base currency against penny rounding
+                diff = round(sum(flt(a.get("debit", 0)) for a in accounts) - sum(flt(a.get("credit", 0)) for a in accounts), 2)
+                if abs(diff) > 0 and abs(diff) <= 0.05:
+                    for a in reversed(accounts):
+                        if a.get("credit", 0) > 0:
+                            a["credit"] = round(a["credit"] + diff, 2)
+                            a["credit_in_account_currency"] = round(a["credit_in_account_currency"] + diff, 2)
+                            break
 
                 posting_date, cheque_date = adjust_due_date_for_je(raw_txn_date, raw_due_date)
                 cheque_ref = bill_no if bill_no and len(str(bill_no)) >= 3 else f"BILL-{bill_no or qb_id}"
@@ -351,6 +475,27 @@ def sync_quickbooks_bills(user=None):
                         updated_je += 1
                         je_name = je.name
                     else:
+                        je = frappe.get_doc("Journal Entry", existing_je)
+                        frappe.db.sql("DELETE FROM `tabJournal Entry Account` WHERE parent = %s", (existing_je,))
+                        frappe.db.sql("DELETE FROM `tabGL Entry` WHERE voucher_type = 'Journal Entry' AND voucher_no = %s", (existing_je,))
+                        for idx, acc in enumerate(accounts, 1):
+                            acc_doc = frappe.new_doc("Journal Entry Account")
+                            acc_doc.update(acc)
+                            acc_doc.parent = existing_je
+                            acc_doc.parenttype = "Journal Entry"
+                            acc_doc.parentfield = "accounts"
+                            acc_doc.idx = idx
+                            acc_doc.flags.ignore_permissions = True
+                            acc_doc.flags.ignore_mandatory = True
+                            acc_doc.insert(ignore_permissions=True)
+                        
+                        je.reload()
+                        je.total_debit = sum(flt(d.debit) for d in je.accounts)
+                        je.total_credit = sum(flt(d.credit) for d in je.accounts)
+                        je.difference = round(je.total_debit - je.total_credit, 2)
+                        je.db_update()
+                        je.make_gl_entries()
+                        updated_je += 1
                         je_name = existing_je
                 else:
                     je = frappe.get_doc({
@@ -364,8 +509,7 @@ def sync_quickbooks_bills(user=None):
                         "accounts": accounts,
                         "custom_quickbooks_je_id": qb_id,
                         "user_remark": f"bills of QBO - {bill_no or qb_id}",
-                        "party_type": "Supplier",
-                        "party": supplier,
+                        "pay_to_recd_from": supplier,
                         "_user_tags": ",QB Bills,"
                     })
                     je.flags.ignore_permissions = True
@@ -377,6 +521,10 @@ def sync_quickbooks_bills(user=None):
                     created_je += 1
                     je_name = je.name
                     existing_jes_map[qb_id] = (je_name, 1)
+
+                # Real-time instant tagging
+                frappe.db.sql("UPDATE `tabJournal Entry` SET _user_tags = ',QB Bills,' WHERE name = %s", (je_name,))
+                frappe.db.sql("INSERT IGNORE INTO `tabTag Link` (name, document_type, document_name, tag) VALUES (%s, 'Journal Entry', %s, 'QB Bills')", (f"{je_name}-QB Bills", je_name))
 
                 # Attachments
                 preloaded = attachments_map.get(("bill", qb_id))
@@ -390,6 +538,37 @@ def sync_quickbooks_bills(user=None):
             except Exception as inner_e:
                 skipped.append(f"Bill {b.get('DocNumber') or b.get('Id')} skipped: {str(inner_e)}")
                 continue
+
+        # Bulk Tag Link insertion for all synced Bills
+        try:
+            if not frappe.db.exists("Tag", "QB Bills"):
+                frappe.get_doc({"doctype": "Tag", "name": "QB Bills"}).insert(ignore_permissions=True)
+            frappe.db.sql("""
+                INSERT IGNORE INTO `tabTag Link` (name, document_type, document_name, tag)
+                SELECT 
+                    MD5(CONCAT(name, '_Journal Entry_QB Bills')),
+                    'Journal Entry',
+                    name,
+                    'QB Bills'
+                FROM `tabJournal Entry`
+                WHERE custom_quickbooks_je_id IS NOT NULL AND custom_quickbooks_je_id REGEXP '^[0-9]+$'
+            """)
+            frappe.db.sql("""
+                UPDATE `tabJournal Entry`
+                SET _user_tags = ',QB Bills,'
+                WHERE custom_quickbooks_je_id IS NOT NULL AND custom_quickbooks_je_id REGEXP '^[0-9]+$'
+                  AND (_user_tags IS NULL OR _user_tags = '')
+            """)
+            frappe.db.commit()
+        except Exception:
+            pass
+
+        # Automatically synchronize Inventory COGS Valuations
+        try:
+            from quickbooks_integration.api.inventory_cogs_sync import sync_inventory_cogs_valuation
+            sync_inventory_cogs_valuation(company)
+        except Exception as cogs_err:
+            frappe.log_error(f"Inventory COGS sync warning: {str(cogs_err)}")
 
         frappe.db.commit()
         msg = f"Bills Sync Completed: {created_je} created, {updated_je} updated, {total_attachments} files attached (Total processed: {len(all_bills)})."

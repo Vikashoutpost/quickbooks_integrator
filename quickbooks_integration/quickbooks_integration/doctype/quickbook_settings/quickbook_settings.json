@@ -5,16 +5,25 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "section_connection",
   "client_id",
   "client_secret",
-  "redirect_uri",
   "environment",
+  "col_break_conn",
+  "redirect_uri",
   "realm_id",
+  "section_tokens",
   "authorization_code",
   "refresh_token",
+  "col_break_tokens",
   "access_token"
  ],
  "fields": [
+  {
+   "fieldname": "section_connection",
+   "fieldtype": "Section Break",
+   "label": "API Credentials & Environment"
+  },
   {
    "fieldname": "client_id",
    "fieldtype": "Data",
@@ -26,20 +35,34 @@
    "label": "Client Secret"
   },
   {
-   "fieldname": "redirect_uri",
-   "fieldtype": "Data",
-   "label": "Redirect URI\t"
-  },
-  {
    "fieldname": "environment",
    "fieldtype": "Select",
    "label": "Environment",
    "options": "sandbox\nproduction"
   },
   {
+   "fieldname": "col_break_conn",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "redirect_uri",
+   "fieldtype": "Data",
+   "label": "Redirect URI"
+  },
+  {
    "fieldname": "realm_id",
    "fieldtype": "Data",
-   "label": "Realm ID"
+   "label": "Realm ID (Company ID)"
+  },
+  {
+   "fieldname": "section_tokens",
+   "fieldtype": "Section Break",
+   "label": "Authentication & OAuth Tokens"
+  },
+  {
+   "fieldname": "authorization_code",
+   "fieldtype": "Data",
+   "label": "Authorization Code"
   },
   {
    "fieldname": "refresh_token",
@@ -47,21 +70,21 @@
    "label": "Refresh Token"
   },
   {
+   "fieldname": "col_break_tokens",
+   "fieldtype": "Column Break"
+  },
+  {
    "fieldname": "access_token",
    "fieldtype": "Small Text",
    "label": "Access Token"
-  },
-  {
-   "fieldname": "authorization_code",
-   "fieldtype": "Data",
-   "label": "Authorization Code"
   }
  ],
  "grid_page_length": 50,
+ "hide_sidebar": 1,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-08-06 08:06:09.914847",
+ "modified": "2026-09-02 12:23:00.000000",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "Quickbook Settings",

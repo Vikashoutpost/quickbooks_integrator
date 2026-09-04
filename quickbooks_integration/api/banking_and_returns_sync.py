@@ -505,6 +505,8 @@ def sync_quickbooks_credit_memos(user=None):
             # Line items (Debits to Income/Tax/Expense)
             lines = cm.get("Line", []) or []
             for line in lines:
+                if line.get("DetailType") == "SubTotalLineDetail":
+                    continue
                 amt = flt(line.get("Amount", 0), 2)
                 if amt <= 0:
                     continue

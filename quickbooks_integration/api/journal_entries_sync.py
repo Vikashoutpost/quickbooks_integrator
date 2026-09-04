@@ -260,7 +260,7 @@ def sync_quickbooks_journal_entries(user=None):
 
         existing_jes_map = {
             r.custom_quickbooks_je_id: (r.name, r.docstatus)
-            for r in frappe.db.sql("SELECT name, custom_quickbooks_je_id, docstatus FROM `tabJournal Entry` WHERE custom_quickbooks_je_id LIKE 'JE-%'", as_dict=True)
+            for r in frappe.db.sql("SELECT name, custom_quickbooks_je_id, docstatus FROM `tabJournal Entry` WHERE custom_quickbooks_je_id LIKE 'JE-%' AND docstatus != 2", as_dict=True)
         }
 
         cust_cache = {
@@ -273,14 +273,9 @@ def sync_quickbooks_journal_entries(user=None):
         }
 
         def resolve_account(acc_ref, txn_curr):
-            if isinstance(acc_ref, dict):
-                acc_name = (acc_ref.get("name") or "").strip()
-                acc_val = (acc_ref.get("value") or "").strip()
-            else:
-                acc_name = str(acc_ref or "").strip()
-                acc_val = ""
-            
-            res = resolve_account_master(acc_name, acc_val, company, cache=cache)
+            res = resolve_account_master(acc_ref, company, cache=cache)
+            if not res:
+                res = "403320 - Office Expenses - MTL"
             if res == "225010 - Trade Creditors - NGN - MTL" and txn_curr == "USD":
                 return "225020 - Trade Creditors - USD - MTL"
             if res == "121010 - Trade Receivables - NGN - MTL" and txn_curr == "USD":
@@ -537,31 +532,26 @@ def sync_quickbooks_journal_entries(user=None):
                     existing_je, je_status = existing_tuple
                     je_name = existing_je
                     if je_status == 1:
+                        # Already submitted and synced! Skip recreating.
+                        continue
+                    elif je_status == 0:
                         je_doc = frappe.get_doc("Journal Entry", existing_je)
-                        je_doc.cancel()
-                    
-                    je_doc = frappe.get_doc({
-                        "doctype": "Journal Entry",
-                        "voucher_type": voucher_type,
-                        "company": company,
-                        "posting_date": getdate(raw_txn_date),
-                        "cheque_no": cheque_ref,
-                        "cheque_date": getdate(raw_txn_date),
-                        "multi_currency": 1,
-                        "accounts": accounts,
-                        "custom_quickbooks_je_id": je_key,
-                        "user_remark": f"QuickBooks JE {doc_number or qbo_je_id}",
-                        "_user_tags": ",QB Journals,"
-                    })
-                    je_doc.flags.ignore_permissions = True
-                    je_doc.flags.ignore_mandatory = True
-                    je_doc.flags.ignore_links = True
-                    je_doc.insert(ignore_permissions=True)
-                    je_doc.flags.ignore_permissions = True
-                    je_doc.submit()
-                    updated_je += 1
-                    je_name = je_doc.name
-                    existing_jes_map[je_key] = (je_name, 1)
+                        je_doc.voucher_type = voucher_type
+                        je_doc.accounts = []
+                        for acc in accounts:
+                            je_doc.append("accounts", acc)
+                        je_doc.posting_date = getdate(raw_txn_date)
+                        je_doc.cheque_no = cheque_ref
+                        je_doc.cheque_date = getdate(raw_txn_date)
+                        je_doc.multi_currency = 1
+                        je_doc.flags.ignore_permissions = True
+                        je_doc.flags.ignore_mandatory = True
+                        je_doc.flags.ignore_links = True
+                        je_doc.save(ignore_permissions=True)
+                        je_doc.flags.ignore_permissions = True
+                        je_doc.submit()
+                        updated_je += 1
+                        existing_jes_map[je_key] = (je_name, 1)
                 else:
                     je_doc = frappe.get_doc({
                         "doctype": "Journal Entry",
@@ -586,6 +576,10 @@ def sync_quickbooks_journal_entries(user=None):
                     je_name = je_doc.name
                     existing_jes_map[je_key] = (je_name, 1)
 
+                # Real-time instant tagging
+                frappe.db.sql("UPDATE `tabJournal Entry` SET _user_tags = ',QB Journals,' WHERE name = %s", (je_name,))
+                frappe.db.sql("INSERT IGNORE INTO `tabTag Link` (name, document_type, document_name, tag) VALUES (%s, 'Journal Entry', %s, 'QB Journals')", (f"{je_name}-QB Journals", je_name))
+
                 # Fetch attachments using preloaded map
                 preloaded = attachments_map.get(("journalentry", str(qbo_je_id)))
                 if preloaded:
@@ -598,6 +592,23 @@ def sync_quickbooks_journal_entries(user=None):
             except Exception as inner_e:
                 skipped.append(f"JE {je.get('DocNumber') or je.get('Id')} skipped due to error: {str(inner_e)}")
                 continue
+
+        # Bulk Tag Link insertion for all synced Journals
+        try:
+            if not frappe.db.exists("Tag", "QB Journals"):
+                frappe.get_doc({"doctype": "Tag", "name": "QB Journals"}).insert(ignore_permissions=True)
+            frappe.db.sql("""
+                INSERT IGNORE INTO `tabTag Link` (name, document_type, document_name, tag)
+                SELECT 
+                    MD5(CONCAT(name, '_Journal Entry_QB Journals')),
+                    'Journal Entry',
+                    name,
+                    'QB Journals'
+                FROM `tabJournal Entry`
+                WHERE custom_quickbooks_je_id LIKE 'JE-%'
+            """)
+        except Exception:
+            pass
 
         frappe.db.commit()
         msg = f"Journal Entries Sync Completed: {created_je} created, {updated_je} updated, {total_attachments} files attached (Total processed: {len(all_journal_entries)})."

@@ -84,7 +84,10 @@ def sync_quickbooks_customers():
                 continue
 
             # Check if already exists by Name (fallback)
-            if frappe.db.exists("Customer", {"customer_name": cust_name}):
+            existing_by_name = frappe.db.exists("Customer", {"customer_name": cust_name})
+            if existing_by_name:
+                frappe.db.set_value("Customer", existing_by_name, "custom_quickbooks_customer_id", qb_customer_id)
+                frappe.db.commit()
                 skipped_customers.append(cust_name)
                 continue
 

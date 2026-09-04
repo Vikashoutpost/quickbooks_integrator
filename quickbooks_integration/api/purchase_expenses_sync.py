@@ -70,7 +70,14 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
                 break
             start += max_results
 
-        from quickbooks_integration.api.banking_and_returns_sync import prefetch_all_attachments
+        from quickbooks_integration.api.banking_and_returns_sync import (
+            prefetch_all_attachments,
+            get_or_create_customer,
+            get_or_create_supplier
+        )
+
+        default_cust = get_or_create_customer({"name": "QuickBooks Customer", "value": "QB-DEFAULT-CUST"})
+        default_supp = get_or_create_supplier({"name": "QuickBooks Vendor", "value": "QB-DEFAULT-VEND"})
 
         # 1. High-Performance Pre-fetching
         attachments_map = prefetch_all_attachments(headers, base_url, realm_id, "Purchase") if fetch_files else {}
@@ -84,10 +91,13 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
             c.custom_quickbooks_customer_id: c.name
             for c in frappe.db.sql("SELECT name, custom_quickbooks_customer_id FROM `tabCustomer` WHERE custom_quickbooks_customer_id IS NOT NULL", as_dict=True)
         }
+        cust_cache["QB-DEFAULT-CUST"] = default_cust
+
         supp_cache = {
             s.custom_quickbooks_vendor_id: s.name
             for s in frappe.db.sql("SELECT name, custom_quickbooks_vendor_id FROM `tabSupplier` WHERE custom_quickbooks_vendor_id IS NOT NULL", as_dict=True)
         }
+        supp_cache["QB-DEFAULT-VEND"] = default_supp
 
         total = len(all_purchases)
         created, updated, files_count = 0, 0, 0
@@ -149,6 +159,8 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
                 detail = line.get("AccountBasedExpenseLineDetail") or line.get("ItemBasedExpenseLineDetail") or {}
                 acc_ref = detail.get("AccountRef") or detail.get("ItemRef") or {}
                 expense_acc = resolve_account_master(acc_ref, company, default_acc=default_expense, cache=cache)
+                if "Revenue" in expense_acc or "Sales" in expense_acc:
+                    expense_acc = default_expense
 
                 acc_info = cache["raw"].get(expense_acc, {})
                 acc_curr = acc_info.get("account_currency") or company_currency
@@ -187,10 +199,10 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
 
                 if acc_type == "Receivable":
                     entry["party_type"] = "Customer"
-                    entry["party"] = customer
+                    entry["party"] = customer or cust_cache.get(entity_val) or default_cust
                 elif acc_type == "Payable":
                     entry["party_type"] = "Supplier"
-                    entry["party"] = supplier
+                    entry["party"] = supplier or supp_cache.get(entity_val) or default_supp
 
                 accounts.append(entry)
 
@@ -236,10 +248,10 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
             bank_acc_type = bank_info.get("account_type")
             if bank_acc_type == "Receivable":
                 bank_entry["party_type"] = "Customer"
-                bank_entry["party"] = customer
+                bank_entry["party"] = customer or cust_cache.get(entity_val) or default_cust
             elif bank_acc_type == "Payable":
                 bank_entry["party_type"] = "Supplier"
-                bank_entry["party"] = supplier
+                bank_entry["party"] = supplier or supp_cache.get(entity_val) or default_supp
 
             accounts.append(bank_entry)
 
@@ -294,6 +306,10 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
                 je_name = je.name
                 existing_jes_map[custom_id] = (je_name, 1)
 
+            # Real-time instant tagging
+            frappe.db.sql("UPDATE `tabJournal Entry` SET _user_tags = ',QB Expenses,' WHERE name = %s", (je_name,))
+            frappe.db.sql("INSERT IGNORE INTO `tabTag Link` (name, document_type, document_name, tag) VALUES (%s, 'Journal Entry', %s, 'QB Expenses')", (f"{je_name}-QB Expenses", je_name))
+
             if fetch_files:
                 preloaded = attachments_map.get(("purchase", str(qb_id)))
                 if preloaded:
@@ -302,8 +318,12 @@ def sync_quickbooks_purchases(user=None, fetch_files=0):
                         prefix="QB_Expense", preloaded_attachables=preloaded, entity_type="Purchase"
                     )
 
-            if (created + updated) % 100 == 0:
-                frappe.db.commit()
+        # Automatically synchronize Inventory COGS Valuations & Alignments
+        try:
+            from quickbooks_integration.api.inventory_cogs_sync import sync_inventory_cogs_valuation
+            sync_inventory_cogs_valuation(company)
+        except Exception as cogs_err:
+            frappe.log_error(f"Inventory COGS sync warning: {str(cogs_err)}")
 
         frappe.db.commit()
         msg = f"Direct Expenses Sync Completed: {created} created, {updated} updated, {files_count} files attached (Total: {total})."
