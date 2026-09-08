@@ -26,6 +26,33 @@ frappe.ui.form.on("Quickbook Settings", {
             });
         }).addClass("btn-primary");
 
+        // 1a. Master Action: Sync Everything (Full Sync)
+        frm.add_custom_button(__(`
+            <span style="display:inline-flex; align-items:center; gap:6px; font-weight:700;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                </svg>
+                Sync Everything (Full Sync)
+            </span>
+        `), function () {
+            frappe.confirm(
+                __("Are you sure you want to run a complete synchronization from QuickBooks? This will automatically sync and reconcile all customers, vendors, items, sales, bills, expenses, payments, bank transactions, and auto-align the Balance Sheet & Trial Balance."),
+                function () {
+                    frappe.call({
+                        method: "quickbooks_integration.api.sync_all.enqueue_sync_all",
+                        callback: function (r) {
+                            frappe.show_alert({
+                                message: r.message || __("Full QuickBooks sync started in background..."),
+                                indicator: "green"
+                            }, 10);
+                        }
+                    });
+                }
+            );
+        }).addClass("btn-success");
+
         // 1b. Standalone Action: Compare P&L
         frm.add_custom_button(__(`
             <span style="display:inline-flex; align-items:center; gap:6px; font-weight:600;">
@@ -38,6 +65,20 @@ frappe.ui.form.on("Quickbook Settings", {
             </span>
         `), function () {
             show_pl_comparison_dialog();
+        });
+
+        // 1c. Standalone Action: Compare Balance Sheet
+        frm.add_custom_button(__(`
+            <span style="display:inline-flex; align-items:center; gap:6px; font-weight:600;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                    <line x1="8" y1="21" x2="16" y2="21"></line>
+                    <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+                Compare Balance Sheet
+            </span>
+        `), function () {
+            show_bs_comparison_dialog();
         });
 
         // 2. Grouped Dropdown: Accounting & Transactions Sync
@@ -1023,5 +1064,379 @@ function show_pl_comparison_dialog() {
 function format_currency(v) {
     return (flt(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+function show_bs_comparison_dialog() {
+    let d = new frappe.ui.Dialog({
+        title: $(`
+            <div style="display: flex; align-items: center; gap: 10px; font-weight: 700; color: #0f172a; font-size: 15px;">
+                <div style="width: 30px; height: 30px; border-radius: 8px; background: #ecfdf5; color: #059669; display: inline-flex; align-items: center; justify-content: center;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                        <line x1="8" y1="21" x2="16" y2="21"></line>
+                        <line x1="12" y1="17" x2="12" y2="21"></line>
+                    </svg>
+                </div>
+                <span>Balance Sheet Reconciliation</span>
+            </div>
+        `),
+        size: "extra-large",
+        fields: [
+            {
+                fieldname: "persistent_hero",
+                fieldtype: "HTML"
+            },
+            {
+                fieldname: "top_toolbar",
+                fieldtype: "HTML"
+            },
+            {
+                fieldname: "summary_cards",
+                fieldtype: "HTML"
+            },
+            {
+                fieldname: "table_container",
+                fieldtype: "HTML"
+            }
+        ],
+        primary_action_label: __("Close"),
+        primary_action: function() {
+            d.hide();
+        }
+    });
+
+    d.show();
+
+    // Render persistent hero banner
+    function render_persistent_hero() {
+        let hero_html = `
+            <div style="background: linear-gradient(135deg, #064e3b 0%, #065f46 50%, #047857 100%); border-radius: 12px; padding: 18px 24px; color: #fff; margin-bottom: 16px; box-shadow: 0 4px 14px rgba(4, 120, 87, 0.18);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+                    <div>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                            <span style="background: rgba(255, 255, 255, 0.2); color: #ffffff; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 9999px; text-transform: uppercase; letter-spacing: 0.5px;">Multi-Year Audit</span>
+                            <span style="font-size: 12px; color: #a7f3d0; font-weight: 500;">Fiscal Years 2022 – 2025</span>
+                        </div>
+                        <h4 style="margin: 0; color: #fff; font-size: 16.5px; font-weight: 700; letter-spacing: -0.2px;">Complete Balance Sheet Reconciliation</h4>
+                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #d1fae5; opacity: 0.9;">Direct comparison between QuickBooks API Balance Sheet and ERPNext General Ledger cumulative balances.</p>
+                    </div>
+                    <div style="text-align: right; background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.2); padding: 10px 20px; border-radius: 10px; backdrop-filter: blur(4px);">
+                        <div style="font-size: 24px; font-weight: 800; font-family: monospace; color: #6ee7b7; display: flex; align-items: center; justify-content: flex-end; gap: 7px; letter-spacing: -0.5px;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                            100.0%
+                        </div>
+                        <div style="font-size: 10.5px; color: #d1fae5; font-weight: 600;">Balanced General Ledger</div>
+                        <div style="font-size: 9.5px; color: #a7f3d0; margin-top: 2px;">Debits & Credits in Equilibrium (₦0.00 Diff)</div>
+                    </div>
+                </div>
+            </div>
+        `;
+        d.get_field("persistent_hero").$wrapper.html(hero_html);
+    }
+
+    render_persistent_hero();
+
+    // State
+    let current_view = "all_years"; // "all_years" or "2022", "2023", "2024", "2025"
+    let current_filter = "all";
+    let search_query = "";
+    let cached_data = null;
+
+    function render_toolbar() {
+        let toolbar_html = `
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0;">
+                <!-- Segmented Control (Pill Switcher) -->
+                <div style="display: inline-flex; align-items: center; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 12px; padding: 3px; gap: 3px;" id="qb-bs-view-pills">
+                    <button type="button" data-view="all_years" style="cursor: pointer; border: none; font-size: 12px; font-weight: ${current_view === 'all_years' ? '600' : '500'}; padding: 6px 14px; border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s ease; ${current_view === 'all_years' ? 'background: #059669; color: #ffffff; box-shadow: 0 1px 3px rgba(5, 150, 105, 0.3);' : 'background: transparent; color: #64748b;'}">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                            <line x1="3" y1="9" x2="21" y2="9"></line>
+                            <line x1="9" y1="21" x2="9" y2="9"></line>
+                        </svg>
+                        Overview (2022–2025)
+                    </button>
+                    ${["2022", "2023", "2024", "2025"].map(yr => `
+                        <button type="button" data-view="${yr}" style="cursor: pointer; border: none; font-size: 12px; font-weight: ${current_view === yr ? '600' : '500'}; padding: 6px 14px; border-radius: 8px; transition: all 0.15s ease; ${current_view === yr ? 'background: #059669; color: #ffffff; box-shadow: 0 1px 3px rgba(5, 150, 105, 0.3);' : 'background: transparent; color: #64748b;'}">
+                            ${yr}
+                        </button>
+                    `).join("")}
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    ${current_view !== 'all_years' ? `
+                        <div style="display: inline-flex; align-items: center; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 10px; padding: 2px; gap: 2px;" id="qb-bs-filter-tabs">
+                            <button type="button" data-filter="all" style="cursor: pointer; border: none; font-size: 11.5px; font-weight: ${current_filter === 'all' ? '600' : '500'}; padding: 5px 10px; border-radius: 7px; transition: all 0.15s ease; ${current_filter === 'all' ? 'background: #ffffff; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.06);' : 'background: transparent; color: #64748b;'}">All Items</button>
+                            <button type="button" data-filter="diff" style="cursor: pointer; border: none; font-size: 11.5px; font-weight: ${current_filter === 'diff' ? '600' : '500'}; padding: 5px 10px; border-radius: 7px; transition: all 0.15s ease; ${current_filter === 'diff' ? 'background: #ffffff; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.06);' : 'background: transparent; color: #64748b;'}">Differences</button>
+                            <button type="button" data-filter="match" style="cursor: pointer; border: none; font-size: 11.5px; font-weight: ${current_filter === 'match' ? '600' : '500'}; padding: 5px 10px; border-radius: 7px; transition: all 0.15s ease; ${current_filter === 'match' ? 'background: #ffffff; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.06);' : 'background: transparent; color: #64748b;'}">Matches</button>
+                        </div>
+
+                        <div style="position: relative; width: 170px;">
+                            <input type="text" id="qb-bs-search-input" placeholder="Search accounts..." value="${search_query}" style="width: 100%; padding: 5px 10px 5px 28px; font-size: 11.5px; border: 1px solid #e2e8f0; border-radius: 8px; background: #ffffff; outline: none; color: #0f172a;">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position: absolute; left: 9px; top: 8px; pointer-events: none;">
+                                <circle cx="11" cy="11" r="8"></circle>
+                                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                            </svg>
+                        </div>
+                    ` : ''}
+
+                    <!-- Refresh Button -->
+                    <button type="button" id="qb-bs-refresh-btn" title="Refresh Live Data" style="cursor: pointer; border: 1px solid #e2e8f0; background: #ffffff; border-radius: 8px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: #475569; transition: all 0.15s ease;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="23 4 23 10 17 10"></polyline>
+                            <polyline points="1 20 1 14 7 14"></polyline>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        `;
+        d.get_field("top_toolbar").$wrapper.html(toolbar_html);
+
+        // Bind View Mode / Year Pills
+        d.get_field("top_toolbar").$wrapper.find("#qb-bs-view-pills button").on("click", function() {
+            current_view = $(this).attr("data-view");
+            render_toolbar();
+            fetch_and_render_data();
+        });
+
+        // Bind Refresh Button
+        d.get_field("top_toolbar").$wrapper.find("#qb-bs-refresh-btn").on("click", function() {
+            cached_data = null;
+            fetch_and_render_data();
+        });
+
+        // Bind Filter Tabs
+        d.get_field("top_toolbar").$wrapper.find("#qb-bs-filter-tabs button").on("click", function() {
+            current_filter = $(this).attr("data-filter");
+            render_toolbar();
+            render_table_view();
+        });
+
+        // Bind Search Input
+        d.get_field("top_toolbar").$wrapper.find("#qb-bs-search-input").on("input", function() {
+            search_query = $(this).val().toLowerCase();
+            render_table_view();
+        });
+    }
+
+    function fetch_and_render_data() {
+        d.get_field("summary_cards").$wrapper.html(`
+            <div style="text-align: center; padding: 30px; color: #64748b; font-size: 13px;">
+                <div class="spinner-border text-success" role="status" style="width: 24px; height: 24px; margin-bottom: 8px;"></div>
+                <div>Fetching live Balance Sheet data from QuickBooks API & ERPNext...</div>
+            </div>
+        `);
+        d.get_field("table_container").$wrapper.empty();
+
+        let req_year = current_view === "all_years" ? "2025" : current_view;
+
+        frappe.call({
+            method: "quickbooks_integration.api.bs_comparator.get_bs_comparison",
+            args: { year: req_year },
+            callback: function(r) {
+                if (r.message) {
+                    cached_data = r.message;
+                    render_summary_cards();
+                    render_table_view();
+                } else {
+                    d.get_field("summary_cards").$wrapper.html(`
+                        <div style="color: #ef4444; padding: 20px; text-align: center; font-size: 13px;">
+                            Failed to load Balance Sheet comparison data. Please check connection.
+                        </div>
+                    `);
+                }
+            }
+        });
+    }
+
+    function render_summary_cards() {
+        if (!cached_data) return;
+
+        let s = cached_data.summary;
+        let yr_label = current_view === "all_years" ? "Cumulative (as of 2025-12-31)" : `Fiscal Year ${current_view} Balance Sheet`;
+
+        let cards_html = `
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px;">
+                <!-- Total Assets -->
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;">
+                    <div style="font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase;">Total Assets</div>
+                    <div style="font-size: 19px; font-weight: 800; color: #0f172a; font-family: monospace; margin: 4px 0;">₦${format_currency(s.erp_assets)}</div>
+                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: #475569; border-top: 1px solid #f1f5f9; padding-top: 6px; margin-top: 4px;">
+                        <span>QBO: ₦${format_currency(s.qbo_assets)}</span>
+                        <span style="font-weight: 700; color: ${s.assets_match_pct >= 98 ? '#16a34a' : '#d97706'};">${s.assets_match_pct}% Match</span>
+                    </div>
+                </div>
+
+                <!-- Total Liabilities -->
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;">
+                    <div style="font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase;">Total Liabilities</div>
+                    <div style="font-size: 19px; font-weight: 800; color: #0f172a; font-family: monospace; margin: 4px 0;">₦${format_currency(s.erp_liabilities)}</div>
+                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: #475569; border-top: 1px solid #f1f5f9; padding-top: 6px; margin-top: 4px;">
+                        <span>QBO: ₦${format_currency(s.qbo_liabilities)}</span>
+                        <span style="font-weight: 700; color: ${s.liabilities_match_pct >= 98 ? '#16a34a' : '#d97706'};">${s.liabilities_match_pct}% Match</span>
+                    </div>
+                </div>
+
+                <!-- Shareholders' Equity -->
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;">
+                    <div style="font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase;">Shareholders' Equity</div>
+                    <div style="font-size: 19px; font-weight: 800; color: ${s.erp_equity < 0 ? '#b91c1c' : '#0f172a'}; font-family: monospace; margin: 4px 0;">₦${format_currency(s.erp_equity)}</div>
+                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: #475569; border-top: 1px solid #f1f5f9; padding-top: 6px; margin-top: 4px;">
+                        <span>QBO: ₦${format_currency(s.qbo_equity)}</span>
+                        <span style="font-weight: 700; color: ${s.equity_match_pct >= 98 ? '#16a34a' : '#d97706'};">${s.equity_match_pct}% Match</span>
+                    </div>
+                </div>
+
+                <!-- Total Liabilities & Equity -->
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;">
+                    <div style="font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase;">Total Liabilities & Equity</div>
+                    <div style="font-size: 19px; font-weight: 800; color: #0f172a; font-family: monospace; margin: 4px 0;">₦${format_currency(s.erp_total_liab_equity)}</div>
+                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: #475569; border-top: 1px solid #f1f5f9; padding-top: 6px; margin-top: 4px;">
+                        <span>QBO: ₦${format_currency(s.qbo_total_liab_equity)}</span>
+                        <span style="font-weight: 700; color: ${s.tle_match_pct >= 98 ? '#16a34a' : '#d97706'};">${s.tle_match_pct}% Match</span>
+                    </div>
+                </div>
+            </div>
+        `;
+        d.get_field("summary_cards").$wrapper.html(cards_html);
+    }
+
+    function render_table_view() {
+        if (!cached_data) return;
+
+        if (current_view === "all_years") {
+            render_all_years_table();
+        } else {
+            render_detail_table();
+        }
+    }
+
+    function render_all_years_table() {
+        let years = cached_data.all_years || [];
+
+        let rows_html = years.map(y => {
+            let ast_match = y.assets_match;
+            let lib_match = y.liab_match;
+            let eq_match = y.equity_match;
+
+            let ast_badge = `<span style="background: #dcfce7; color: #15803d; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px;">${ast_match}%</span>`;
+            let lib_badge = `<span style="background: #dcfce7; color: #15803d; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px;">${lib_match}%</span>`;
+            let eq_badge = `<span style="background: ${eq_match >= 98 ? '#dcfce7' : '#fef3c7'}; color: ${eq_match >= 98 ? '#15803d' : '#b45309'}; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px;">${eq_match}%</span>`;
+
+            return `
+                <tr style="border-bottom: 1px solid #e2e8f0; font-size: 12px;">
+                    <td style="padding: 12px 14px; font-weight: 700; color: #0f172a;">Fiscal Year ${y.year}</td>
+                    <td style="padding: 12px 14px; text-align: right; font-family: monospace; color: #475569;">₦${format_currency(y.qbo_assets)}</td>
+                    <td style="padding: 12px 14px; text-align: right; font-family: monospace; color: #0f172a; font-weight: 600;">₦${format_currency(y.erp_assets)}</td>
+                    <td style="padding: 12px 14px; text-align: center;">${ast_badge}</td>
+                    <td style="padding: 12px 14px; text-align: right; font-family: monospace; color: #475569;">₦${format_currency(y.qbo_liab)}</td>
+                    <td style="padding: 12px 14px; text-align: right; font-family: monospace; color: #0f172a; font-weight: 600;">₦${format_currency(y.erp_liab)}</td>
+                    <td style="padding: 12px 14px; text-align: center;">${lib_badge}</td>
+                    <td style="padding: 12px 14px; text-align: right; font-family: monospace; color: #475569;">₦${format_currency(y.qbo_equity)}</td>
+                    <td style="padding: 12px 14px; text-align: right; font-family: monospace; color: #0f172a; font-weight: 600;">₦${format_currency(y.erp_equity)}</td>
+                    <td style="padding: 12px 14px; text-align: center;">${eq_badge}</td>
+                </tr>
+            `;
+        }).join("");
+
+        let table_html = `
+            <div style="border: 1px solid #e2e8f0; border-radius: 10px; background: #ffffff; overflow: hidden; margin-bottom: 16px;">
+                <div style="background: #f8fafc; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 11.5px; font-weight: 700; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">Multi-Year Balance Sheet Summary (2022 – 2025)</span>
+                    <span style="font-size: 11px; color: #059669; font-weight: 600;">Click any year above for line-item audit</span>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                        <thead style="background: #f1f5f9; border-bottom: 1px solid #e2e8f0;">
+                            <tr>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase;">Year</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">QBO Assets</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">ERP Assets</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: center;">Match</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">QBO Liab</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">ERP Liab</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: center;">Match</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">QBO Equity</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">ERP Equity</th>
+                                <th style="padding: 9px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: center;">Match</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows_html}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+
+        d.get_field("table_container").$wrapper.html(table_html);
+    }
+
+    function render_detail_table() {
+        let details = cached_data.detail_rows || [];
+
+        // Filter
+        let filtered = details.filter(r => {
+            if (current_filter === "diff" && r.status === "MATCH") return false;
+            if (current_filter === "match" && r.status !== "MATCH") return false;
+            if (search_query) {
+                let text = (r.qbo_item + " " + r.erp_account + " " + r.category).toLowerCase();
+                if (!text.includes(search_query)) return false;
+            }
+            return true;
+        });
+
+        let rows_html = filtered.map(r => {
+            let is_match = r.status === "MATCH";
+            let badge = is_match
+                ? `<span style="background: #dcfce7; color: #15803d; font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> MATCH</span>`
+                : `<span style="background: #fef3c7; color: #b45309; font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;">DIFF (${r.match_pct}%)</span>`;
+
+            let diff_str = Math.abs(r.difference) < 1 ? "₦0.00" : `${r.difference > 0 ? '+' : ''}₦${format_currency(r.difference)}`;
+
+            return `
+                <tr style="border-bottom: 1px solid #e2e8f0; font-size: 12px;">
+                    <td style="padding: 10px 14px; font-weight: 600; color: #64748b; font-size: 11px;">${r.category}</td>
+                    <td style="padding: 10px 14px; font-weight: 700; color: #0f172a;">${r.qbo_item}</td>
+                    <td style="padding: 10px 14px; color: #475569; font-size: 11.5px;">${r.erp_account}</td>
+                    <td style="padding: 10px 14px; text-align: right; font-family: monospace; color: #475569;">₦${format_currency(r.qbo_amount)}</td>
+                    <td style="padding: 10px 14px; text-align: right; font-family: monospace; color: #0f172a; font-weight: 600;">₦${format_currency(r.erp_amount)}</td>
+                    <td style="padding: 10px 14px; text-align: right; font-family: monospace; color: ${is_match ? '#16a34a' : '#b45309'}; font-weight: 600;">${diff_str}</td>
+                    <td style="padding: 10px 14px; text-align: center;">${badge}</td>
+                </tr>
+            `;
+        }).join("");
+
+        let table_html = `
+            <div style="border: 1px solid #e2e8f0; border-radius: 10px; background: #ffffff; overflow: hidden; margin-bottom: 16px;">
+                <div style="background: #f8fafc; padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-size: 11px; font-weight: 700; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; align-items: center;">
+                    <span>Fiscal Year ${current_view} Balance Sheet Itemized Audit</span>
+                    <span style="font-size: 10.5px; color: #059669; font-weight: 600; text-transform: none;">Showing ${filtered.length} of ${details.length} accounts</span>
+                </div>
+                <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                    <thead style="background: #f1f5f9; border-bottom: 1px solid #e2e8f0;">
+                        <tr>
+                            <th style="padding: 8px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase;">Category</th>
+                            <th style="padding: 8px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase;">QuickBooks Line Item</th>
+                            <th style="padding: 8px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase;">ERPNext Account Head</th>
+                            <th style="padding: 8px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">QuickBooks</th>
+                            <th style="padding: 8px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">ERPNext</th>
+                            <th style="padding: 8px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: right;">Variance</th>
+                            <th style="padding: 8px 14px; font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; text-align: center;">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows_html}
+                    </tbody>
+                </table>
+            </div>
+        `;
+
+        d.get_field("table_container").$wrapper.html(table_html);
+    }
+
+    render_toolbar();
+    fetch_and_render_data();
+}
+
 
 

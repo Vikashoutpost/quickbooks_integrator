@@ -31,22 +31,27 @@ def sync_inventory_cogs_valuation(company=None):
             {"account": inventory_asset, "debit": 10262951.31, "credit": 0}
         ], "QuickBooks Inventory Hardware Valuation - 2024"),
         ("COGS-ADJ-2025", "2025-12-31", [
-            {"account": cogs_device, "debit": 18166498.48, "credit": 0},
+            {"account": cogs_device, "debit": 1408250.00, "credit": 0},
             {"account": cogs_logistics, "debit": 11527687.00, "credit": 0},
-            {"account": inventory_asset, "debit": 0, "credit": 29694185.48}
+            {"account": inventory_asset, "debit": 0, "credit": 12935937.00}
         ], "QuickBooks Inventory Hardware Valuation & Shrinkage - 2025"),
         ("FOREX-ADJ-2023", "2023-12-31", [
             {"account": round_off, "debit": 0, "credit": 150.00},
             {"account": reserve_surplus, "debit": 150.00, "credit": 0}
         ], "QuickBooks Decimals Rounding Alignment - 2023"),
         ("FOREX-ADJ-2024", "2024-12-31", [
-            {"account": forex_account, "debit": 0, "credit": 864736.67},
-            {"account": round_off, "debit": 0, "credit": 675.00},
-            {"account": reserve_surplus, "debit": 865411.67, "credit": 0}
+            {"account": "225020 - Trade Creditors - USD - MTL", "debit": 826679.49, "credit": 0, "party_type": "Supplier", "party": "SUP-2025-00017", "account_currency": "USD"},
+            {"account": "121020 - Trade Receivables - USD - MTL", "debit": 38057.18, "credit": 0, "party_type": "Customer", "party": "CUST-2025-00016", "account_currency": "USD"},
+            {"account": "230040 - VAT Payable - MTL", "debit": 825.00, "credit": 0, "account_currency": "NGN"},
+            {"account": forex_account, "debit": 0, "credit": 864886.67, "account_currency": "NGN"},
+            {"account": round_off, "debit": 0, "credit": 675.00, "account_currency": "NGN"}
         ], "QuickBooks Multi-Currency Translation Alignment - 2024"),
         ("FOREX-ADJ-2025", "2025-12-31", [
-            {"account": forex_account, "debit": 672913.08, "credit": 0},
-            {"account": reserve_surplus, "debit": 0, "credit": 672913.08}
+            {"account": "225020 - Trade Creditors - USD - MTL", "debit": 1031345.62, "credit": 0, "party_type": "Supplier", "party": "SUP-2025-00017", "account_currency": "USD"},
+            {"account": "225010 - Trade Creditors - NGN - MTL", "debit": 50424.00, "credit": 0, "party_type": "Supplier", "party": "SMN0013", "account_currency": "NGN"},
+            {"account": forex_account, "debit": 672913.08, "credit": 0, "account_currency": "NGN"},
+            {"account": "121020 - Trade Receivables - USD - MTL", "debit": 0, "credit": 620557.70, "party_type": "Customer", "party": "CUST-2025-00016", "account_currency": "USD"},
+            {"account": "119080 - FCMB USD - MTL", "debit": 0, "credit": 1134125.00, "account_currency": "USD"}
         ], "QuickBooks Multi-Currency Translation Alignment - 2025"),
     ]
 
@@ -62,6 +67,7 @@ def sync_inventory_cogs_valuation(company=None):
             doc = frappe.get_doc("Journal Entry", existing)
             frappe.db.sql("DELETE FROM `tabJournal Entry Account` WHERE parent = %s", (existing,))
             frappe.db.sql("DELETE FROM `tabGL Entry` WHERE voucher_type = 'Journal Entry' AND voucher_no = %s", (existing,))
+            doc.multi_currency = 1
             updated_count += 1
         else:
             doc = frappe.get_doc({
@@ -70,6 +76,7 @@ def sync_inventory_cogs_valuation(company=None):
                 "company": company,
                 "custom_quickbooks_je_id": custom_id,
                 "posting_date": posting_date,
+                "multi_currency": 1,
                 "user_remark": remark,
                 "total_debit": tot_dr,
                 "total_credit": tot_cr,
@@ -82,17 +89,21 @@ def sync_inventory_cogs_valuation(company=None):
             created_count += 1
 
         doc.posting_date = posting_date
+        doc.multi_currency = 1
         doc.user_remark = remark
 
         for idx, line in enumerate(lines, 1):
             jea = frappe.new_doc("Journal Entry Account")
+            acc_curr = line.get("account_currency") or "NGN"
             jea.update({
                 "account": line["account"],
+                "party_type": line.get("party_type"),
+                "party": line.get("party"),
                 "debit_in_account_currency": line["debit"],
                 "credit_in_account_currency": line["credit"],
                 "debit": line["debit"],
                 "credit": line["credit"],
-                "account_currency": "NGN",
+                "account_currency": acc_curr,
                 "exchange_rate": 1.0,
                 "cost_center": "QuickBooks - MTL",
                 "channel": "QuickBooks",

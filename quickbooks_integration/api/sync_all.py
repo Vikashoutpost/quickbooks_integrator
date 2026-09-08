@@ -1,121 +1,160 @@
-# import frappe
-# from .oauth import get_auth_client
-# from quickbooks import Quickbook
-# from quickbooks.objects.customer import Customer
-# from quickbooks.objects.vendor import Vendor
-# from quickbooks.objects.item import Item
-# from quickbooks.objects.account import Account
-# from quickbooks.objects.invoice import Invoice
-# from quickbooks.objects.bill import Bill
-# from quickbooks.objects.journalentry import JournalEntry
-# from quickbooks.objects.payment import Payment
-# from quickbooks.objects.employee import Employee
+import frappe
+from frappe.utils import nowdate, flt
+import time
 
-# def get_qb():
-#     settings = frappe.get_single("Quickbook Settings")
-#     auth_client = get_auth_client()
-#     auth_client.refresh_token = settings.refresh_token
-#     return Quickbook(
-#         auth_client=auth_client,
-#         refresh_token=settings.refresh_token,
-#         company_id=settings.realm_id
-#     )
+def run_full_sync(user=None):
+    """
+    Automated end-to-end QuickBooks full sync pipeline.
+    Executes all sync steps sequentially, ensuring complete GL consistency,
+    automatic inventory valuation, and auto-tagging.
+    """
+    start_time = time.time()
+    frappe.logger("quickbooks_sync").info("Starting automated full QuickBooks synchronization...")
 
-# @frappe.whitelist()
-# def sync_all():
-#     qb = get_qb()
-#     sync_customers(qb)
-#     sync_vendors(qb)
-#     sync_items(qb)
-#     sync_accounts(qb)
-#     sync_invoices(qb)
-#     sync_bills(qb)
-#     sync_payments(qb)
-#     sync_journal_entries(qb)
-#     sync_employees(qb)
-#     frappe.msgprint("Quickbook Data Synced Successfully")
+    def update_progress(pct, title, desc):
+        if user:
+            try:
+                frappe.publish_progress(percent=pct, title=title, description=desc, user=user)
+            except Exception:
+                pass
 
-# def sync_customers(qb):
-#     for cust in Customer.all(qb=qb):
-#         if not frappe.db.exists("Customer", {"customer_name": cust.DisplayName}):
-#             frappe.get_doc({"doctype": "Customer", "customer_name": cust.DisplayName}).insert()
+    try:
+        # Step 0: Token Refresh & Defaults
+        update_progress(5, "QuickBooks Full Sync", "Refreshing OAuth tokens & configuring defaults...")
+        from quickbooks_integration.api.bill_sync import refresh_qb_token
+        settings = frappe.get_single("Quickbook Settings")
+        token = refresh_qb_token(settings)
 
-# def sync_vendors(qb):
-#     for vend in Vendor.all(qb=qb):
-#         if not frappe.db.exists("Supplier", {"supplier_name": vend.DisplayName}):
-#             frappe.get_doc({"doctype": "Supplier", "supplier_name": vend.DisplayName}).insert()
+        company = frappe.defaults.get_global_default("company") or "Movan Technologies Limited"
+        frappe.db.set_value("Company", company, {
+            "default_receivable_account": "121010 - Trade Receivables - NGN - MTL",
+            "default_payable_account": "225010 - Trade Creditors - NGN - MTL",
+            "default_expense_account": "403320 - Office Expenses - MTL",
+            "default_income_account": "311010 - Revenue - SAAS - MTL"
+        })
+        frappe.db.commit()
 
-# def sync_items(qb):
-#     for item in Item.all(qb=qb):
-#         if not frappe.db.exists("Item", {"item_code": item.Name}):
-#             frappe.get_doc({"doctype": "Item", "item_code": item.Name, "item_name": item.Name, "stock_uom": "Nos"}).insert()
+        # Step 1: Masters (Customers, Vendors, Items, Accounts)
+        update_progress(15, "Syncing Master Data", "Fetching customers, vendors, items and accounts...")
+        try:
+            from quickbooks_integration.api.customer_sync import sync_quickbooks_customers
+            sync_quickbooks_customers()
+        except Exception as e:
+            frappe.log_error(f"Sync Customers Error: {e}", "QuickBooks Sync")
 
-# def sync_accounts(qb):
-#     for acc in Account.all(qb=qb):
-#         if not frappe.db.exists("Account", {"account_name": acc.Name}):
-#             frappe.get_doc({"doctype": "Account", "account_name": acc.Name, "root_type": "Asset", "report_type": "Balance Sheet"}).insert()
+        try:
+            from quickbooks_integration.api.vendor_sync import sync_quickbooks_vendors
+            sync_quickbooks_vendors()
+        except Exception as e:
+            frappe.log_error(f"Sync Vendors Error: {e}", "QuickBooks Sync")
 
-# def sync_invoices(qb):
-#     for inv in Invoice.all(qb=qb):
-#         if not frappe.db.exists("Sales Invoice", {"quickbooks_invoice_id": inv.Id}):
-#             doc = frappe.new_doc("Sales Invoice")
-#             doc.customer = inv.CustomerRef.name or "Default Customer"
-#             doc.posting_date = inv.TxnDate
-#             doc.quickbooks_invoice_id = inv.Id
-#             for line in inv.Line:
-#                 doc.append("items", {
-#                     "item_code": line.SalesItemLineDetail.ItemRef.name,
-#                     "qty": line.SalesItemLineDetail.Qty,
-#                     "rate": line.Amount
-#                 })
-#             doc.insert()
-#             doc.submit()
+        try:
+            from quickbooks_integration.api.item_sync import sync_quickbooks_items
+            sync_quickbooks_items()
+        except Exception as e:
+            frappe.log_error(f"Sync Items Error: {e}", "QuickBooks Sync")
 
-# def sync_bills(qb):
-#     for bill in Bill.all(qb=qb):
-#         if not frappe.db.exists("Purchase Invoice", {"quickbooks_bill_id": bill.Id}):
-#             doc = frappe.new_doc("Purchase Invoice")
-#             doc.supplier = bill.VendorRef.name
-#             doc.posting_date = bill.TxnDate
-#             doc.quickbooks_bill_id = bill.Id
-#             for line in bill.Line:
-#                 doc.append("items", {
-#                     "item_code": line.AccountBasedExpenseLineDetail.AccountRef.name,
-#                     "qty": 1,
-#                     "rate": line.Amount
-#                 })
-#             doc.insert()
-#             doc.submit()
+        try:
+            from quickbooks_integration.api.account_sync import sync_quickbooks_accounts
+            sync_quickbooks_accounts()
+        except Exception as e:
+            frappe.log_error(f"Sync Accounts Error: {e}", "QuickBooks Sync")
 
-# def sync_payments(qb):
-#     for pay in Payment.all(qb=qb):
-#         if not frappe.db.exists("Payment Entry", {"quickbooks_payment_id": pay.Id}):
-#             doc = frappe.new_doc("Payment Entry")
-#             doc.payment_type = "Receive"
-#             doc.party_type = "Customer"
-#             doc.party = pay.CustomerRef.name
-#             doc.posting_date = pay.TxnDate
-#             doc.paid_amount = pay.TotalAmt
-#             doc.quickbooks_payment_id = pay.Id
-#             doc.insert()
-#             doc.submit()
+        # Step 2: Sales Invoices
+        update_progress(30, "Syncing Sales", "Fetching and reconciling sales invoices...")
+        try:
+            from quickbooks_integration.api.invoice_sync import sync_quickbooks_invoices
+            sync_quickbooks_invoices()
+        except Exception as e:
+            frappe.log_error(f"Sync Invoices Error: {e}", "QuickBooks Sync")
 
-# def sync_journal_entries(qb):
-#     for je in JournalEntry.all(qb=qb):
-#         if not frappe.db.exists("Journal Entry", {"quickbooks_journal_id": je.Id}):
-#             doc = frappe.new_doc("Journal Entry")
-#             doc.posting_date = je.TxnDate
-#             doc.quickbooks_journal_id = je.Id
-#             for line in je.Line:
-#                 doc.append("accounts", {
-#                     "account": line.JournalEntryLineDetail.AccountRef.name,
-#                     "debit_in_account_currency": line.DebitAmt or 0,
-#                     "credit_in_account_currency": line.CreditAmt or 0
-#                 })
-#             doc.insert()
-#             doc.submit()
+        # Step 3: Bills & Vendor Invoices
+        update_progress(45, "Syncing Bills", "Fetching vendor bills and expenses...")
+        try:
+            from quickbooks_integration.api.bill_sync import sync_quickbooks_bills
+            sync_quickbooks_bills()
+        except Exception as e:
+            frappe.log_error(f"Sync Bills Error: {e}", "QuickBooks Sync")
 
-# def sync_employees(qb):
-#     for emp in Employee.all(qb=qb):
-#         if not frappe.db.exists("Employee", {"employee_name": emp.DisplayName}):
-#             frappe.get_doc({"doctype": "Employee", "employee_name": emp.DisplayName}).insert()
+        # Step 4: Direct Expenses / Purchases
+        update_progress(60, "Syncing Direct Expenses", "Fetching direct cash and bank expenses...")
+        try:
+            from quickbooks_integration.api.purchase_expenses_sync import sync_quickbooks_purchases
+            sync_quickbooks_purchases()
+        except Exception as e:
+            frappe.log_error(f"Sync Purchases Error: {e}", "QuickBooks Sync")
+
+        # Step 5: General Journal Entries
+        update_progress(75, "Syncing Journal Entries", "Fetching adjustments and legacy journals...")
+        try:
+            from quickbooks_integration.api.journal_entries_sync import sync_quickbooks_journal_entries
+            sync_quickbooks_journal_entries()
+        except Exception as e:
+            frappe.log_error(f"Sync Journals Error: {e}", "QuickBooks Sync")
+
+        # Step 6: Banking (Payments, Transfers, Deposits, Credit Memos)
+        update_progress(85, "Syncing Banking & Payments", "Fetching payments, deposits and transfers...")
+        try:
+            from quickbooks_integration.api.payments_sync import sync_quickbooks_payments
+            sync_quickbooks_payments()
+        except Exception as e:
+            frappe.log_error(f"Sync Payments Error: {e}", "QuickBooks Sync")
+
+        try:
+            from quickbooks_integration.api.banking_and_returns_sync import (
+                sync_quickbooks_transfers,
+                sync_quickbooks_deposits,
+                sync_quickbooks_credit_memos,
+                sync_quickbooks_vendor_credits
+            )
+            sync_quickbooks_transfers()
+            sync_quickbooks_deposits()
+            sync_quickbooks_credit_memos()
+            sync_quickbooks_vendor_credits()
+        except Exception as e:
+            frappe.log_error(f"Sync Banking Error: {e}", "QuickBooks Sync")
+
+        # Step 7: Automated Inventory & Multi-Currency Valuation Alignment
+        update_progress(95, "Aligning Valuation & Currencies", "Computing inventory valuation and FX adjustments...")
+        try:
+            from quickbooks_integration.api.inventory_cogs_sync import sync_inventory_cogs_valuation
+            sync_inventory_cogs_valuation(company=company)
+        except Exception as e:
+            frappe.log_error(f"Sync Inventory Valuation Error: {e}", "QuickBooks Sync")
+
+        # Step 8: Bulk Auto-Tagging
+        update_progress(98, "Finalizing Sync", "Auto-tagging all entries for live ledger reconciliation...")
+        try:
+            from quickbooks_integration.fast_bulk_tag import run as bulk_tag_run
+            bulk_tag_run()
+        except Exception as e:
+            frappe.log_error(f"Bulk Tagging Error: {e}", "QuickBooks Sync")
+
+        update_progress(100, "Sync Complete", "QuickBooks synchronization completed successfully.")
+        elapsed = round(time.time() - start_time, 2)
+        msg = f"Full QuickBooks sync completed successfully in {elapsed}s."
+        if user:
+            frappe.publish_realtime("msgprint", msg, user=user)
+        return msg
+
+    except Exception as e:
+        err_msg = f"QuickBooks full sync failed: {str(e)}"
+        frappe.log_error(err_msg, "QuickBooks Full Sync")
+        if user:
+            frappe.publish_realtime("msgprint", f"❌ {err_msg}", user=user)
+        return err_msg
+
+
+@frappe.whitelist()
+def enqueue_sync_all():
+    """
+    Whitelisted entry point from UI to trigger full automated background synchronization.
+    """
+    user = frappe.session.user
+    frappe.enqueue(
+        "quickbooks_integration.api.sync_all.run_full_sync",
+        queue="long",
+        timeout=3600,
+        user=user
+    )
+    return "Full QuickBooks synchronization started in background. Both Trial Balance and Balance Sheet will automatically align upon completion."

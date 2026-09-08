@@ -293,12 +293,19 @@ def sync_quickbooks_payments(user=None):
                 cust_id = cust_ref.get("value")
                 cust_name = cust_ref.get("name") or f"QuickBooks Customer {cust_id}"
 
-                customer = frappe.db.get_value("Customer", {"customer_name": cust_name}, "name")
+                customer = None
+                if cust_id:
+                    customer = frappe.db.get_value("Customer", {"custom_quickbooks_customer_id": cust_id}, "name")
+                if not customer:
+                    customer = frappe.db.get_value("Customer", {"customer_name": cust_name}, "name")
+                if not customer and cust_name:
+                    customer = frappe.db.get_value("Customer", {"customer_name": ["like", f"%{cust_name.strip()}%"]}, "name")
                 if not customer:
                     try:
                         cdoc = frappe.get_doc({
                             "doctype": "Customer",
                             "customer_name": cust_name,
+                            "custom_quickbooks_customer_id": cust_id,
                             "customer_group": "All Customer Groups",
                             "territory": "All Territories",
                             "default_currency": currency,
@@ -513,12 +520,19 @@ def sync_quickbooks_payments(user=None):
                 vendor_id = vendor_ref.get("value")
                 vendor_name = vendor_ref.get("name") or f"QuickBooks Vendor {vendor_id}"
 
-                supplier = frappe.db.get_value("Supplier", {"supplier_name": vendor_name}, "name")
+                supplier = None
+                if vendor_id:
+                    supplier = frappe.db.get_value("Supplier", {"custom_quickbooks_vendor_id": vendor_id}, "name")
+                if not supplier:
+                    supplier = frappe.db.get_value("Supplier", {"supplier_name": vendor_name}, "name")
+                if not supplier and vendor_name:
+                    supplier = frappe.db.get_value("Supplier", {"supplier_name": ["like", f"%{vendor_name.strip()}%"]}, "name")
                 if not supplier:
                     try:
                         sdoc = frappe.get_doc({
                             "doctype": "Supplier",
                             "supplier_name": vendor_name,
+                            "custom_quickbooks_vendor_id": vendor_id,
                             "supplier_group": "All Supplier Groups",
                             "supplier_type": "Private Limited Company(Ltd)",
                             "default_currency": currency,
