@@ -5,3 +5,13 @@
 tags
 node_modules
 __pycache__
+
+# Agent configurations and rulebooks
+.agents/
+QUICKBOOKS_SYNC_RULEBOOK.md
+
+# Scratch, audit, and test scripts in module root
+quickbooks_integration/*.py
+!quickbooks_integration/__init__.py
+!quickbooks_integration/hooks.py
+quickbooks_integration/*.json
