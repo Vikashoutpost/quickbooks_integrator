@@ -174,10 +174,10 @@ scheduler_events = {
 # Overriding Methods
 # ------------------------------
 #
-override_whitelisted_methods = {
-    "quickbooks_integration.api.webhooks.handle_qbo_webhook": 
-    "quickbooks_integration.api.webhooks.handle_qbo_webhook"
-}
+# override_whitelisted_methods = {
+#     "quickbooks_integration.api.webhooks.handle_qbo_webhook": 
+#     "quickbooks_integration.api.webhooks.handle_qbo_webhook"
+# }
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,

@@ -26,33 +26,6 @@ frappe.ui.form.on("Quickbook Settings", {
             });
         }).addClass("btn-primary");
 
-        // 1a. Master Action: Sync Everything (Full Sync)
-        frm.add_custom_button(__(`
-            <span style="display:inline-flex; align-items:center; gap:6px; font-weight:700;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="23 4 23 10 17 10"></polyline>
-                    <polyline points="1 20 1 14 7 14"></polyline>
-                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-                </svg>
-                Sync Everything (Full Sync)
-            </span>
-        `), function () {
-            frappe.confirm(
-                __("Are you sure you want to run a complete synchronization from QuickBooks? This will automatically sync and reconcile all customers, vendors, items, sales, bills, expenses, payments, bank transactions, and auto-align the Balance Sheet & Trial Balance."),
-                function () {
-                    frappe.call({
-                        method: "quickbooks_integration.api.sync_all.enqueue_sync_all",
-                        callback: function (r) {
-                            frappe.show_alert({
-                                message: r.message || __("Full QuickBooks sync started in background..."),
-                                indicator: "green"
-                            }, 10);
-                        }
-                    });
-                }
-            );
-        }).addClass("btn-success");
-
         // 1b. Standalone Action: Compare P&L
         frm.add_custom_button(__(`
             <span style="display:inline-flex; align-items:center; gap:6px; font-weight:600;">
@@ -218,7 +191,7 @@ frappe.ui.form.on("Quickbook Settings", {
 
         frm.add_custom_button(__("Re-apply All Tags"), function() {
             frappe.call({
-                method: "quickbooks_integration.fast_bulk_tag.run_from_ui",
+                method: "quickbooks_integration.api.bulk_tagging.run_from_ui",
                 freeze: true,
                 freeze_message: __("Re-applying all QuickBooks tags to ERPNext documents..."),
                 callback: function(r) {
