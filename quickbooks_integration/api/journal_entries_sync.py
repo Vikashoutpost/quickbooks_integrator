@@ -156,6 +156,18 @@ def fetch_je_attachments(je_id, erp_je_name, headers, base_url, realm_id, preloa
                 except Exception:
                     file_content = None
 
+            # If QuickBooks returned a download URL string instead of raw binary, fetch the actual file from that URL
+            if file_content and (file_content.startswith(b"http://") or file_content.startswith(b"https://")):
+                try:
+                    actual_dl_url = file_content.decode("utf-8").strip()
+                    r_actual = requests.get(actual_dl_url, timeout=30)
+                    if r_actual.status_code == 200:
+                        file_content = r_actual.content
+                    else:
+                        file_content = None
+                except Exception:
+                    file_content = None
+
             if file_content:
                 file_doc = frappe.get_doc({
                     "doctype": "File",
