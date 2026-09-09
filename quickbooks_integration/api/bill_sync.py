@@ -132,9 +132,14 @@ def fetch_bill_attachments(bill_id, je_name, headers, base_url, realm_id, preloa
                     file_content = None
 
             if file_content:
+                if not hasattr(frappe.local, "rollback_observers"):
+                    frappe.local.rollback_observers = []
+
+                ext = (file_name.rsplit(".", 1)[-1] if "." in file_name else "").upper()
                 file_doc = frappe.get_doc({
                     "doctype": "File",
                     "file_name": file_name,
+                    "file_type": ext,
                     "attached_to_doctype": "Journal Entry",
                     "attached_to_name": je_name,
                     "content": file_content,
