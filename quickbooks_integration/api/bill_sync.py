@@ -483,7 +483,8 @@ def sync_quickbooks_bills(user=None):
                     skipped.append(f"Bill {bill_no or qb_id} skipped - No valid debit amounts")
                     continue
 
-                payable_account = "225020 - Trade Creditors - USD - MTL" if currency == "USD" else default_payable
+                supp_curr = frappe.db.get_value("Supplier", supplier, "default_currency") or currency
+                payable_account = "225020 - Trade Creditors - USD - MTL" if (currency == "USD" or supp_curr == "USD") else default_payable
                 pay_acc_curr = frappe.db.get_value("Account", payable_account, "account_currency") or company_currency
 
                 bill_total = flt(b.get("TotalAmt", 0), 2)
@@ -647,19 +648,19 @@ def sync_quickbooks_bills(user=None):
             from quickbooks_integration.api.inventory_cogs_sync import sync_inventory_cogs_valuation
             sync_inventory_cogs_valuation(company)
         except Exception as cogs_err:
-            frappe.log_error(f"Inventory COGS sync warning: {str(cogs_err)}")
+            frappe.log_error(title="Inventory COGS sync warning", message=str(cogs_err))
 
         # Self-healing safeguard: Ensure all synced bill GL entries are 100% balanced
         try:
             auto_balance_bill_gl_entries(company)
         except Exception as bal_err:
-            frappe.log_error(f"Auto-balance bills warning: {str(bal_err)}")
+            frappe.log_error(title="Auto-balance bills warning", message=str(bal_err))
 
         frappe.db.commit()
         msg = f"Bills Sync Completed: {created_je} created, {updated_je} updated, {total_attachments} files attached (Total processed: {len(all_bills)})."
         if skipped:
             msg += f" Skipped {len(skipped)} entries."
-            frappe.log_error("\n".join(skipped), "QuickBooks Bill Sync Skipped")
+            frappe.log_error(title="QuickBooks Bill Sync Skipped", message="\n".join(skipped))
 
         if user:
             frappe.publish_realtime("msgprint", msg, user=user)
@@ -667,7 +668,7 @@ def sync_quickbooks_bills(user=None):
         return msg
 
     except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "QuickBooks Bill Sync Error")
+        frappe.log_error(title="QuickBooks Bill Sync Error", message=frappe.get_traceback())
         err_msg = f"Error occurred: {str(e)}"
         if user:
             frappe.publish_realtime("msgprint", err_msg, user=user)

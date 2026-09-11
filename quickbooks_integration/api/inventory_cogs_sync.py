@@ -10,7 +10,9 @@ def sync_inventory_cogs_valuation(company=None):
     if not company:
         company = frappe.defaults.get_global_default("company") or "Movam Technologies Limited"
 
-    inventory_asset = "QB-194 - Inventory Asset - MTL"
+    inventory_asset = "120010 - Stock In Hand - Device - MTL"
+    if not frappe.db.exists("Account", inventory_asset):
+        inventory_asset = "120020 - Asset Warehouse - MTL"
     cogs_device = "401040 - COGS Device - MTL"
     cogs_logistics = "401080 - COGS Logistics - MTL"
     reserve_surplus = "234010 - Retained Earnings - MTL"

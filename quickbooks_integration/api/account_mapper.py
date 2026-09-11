@@ -133,8 +133,8 @@ MASTER_ACCOUNT_MAP = {
     "freight and delivery - cos": "401050 - COGS Device : Freight and delivery - MTL",
     "freight and delivery": "401050 - COGS Device : Freight and delivery - MTL",
     "62": "401050 - COGS Device : Freight and delivery - MTL",
-    "119": "QB-119 - Inventory Shrinkage - MTL",
-    "inventory shrinkage": "QB-119 - Inventory Shrinkage - MTL",
+    "119": "402010 - Stock Adjustment - MTL",
+    "inventory shrinkage": "402010 - Stock Adjustment - MTL",
 
     # 11. Operating Expenses & Other P&L
     "137": "403380 - Registration & Renewal Fees - MTL",
